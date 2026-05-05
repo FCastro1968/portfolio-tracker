@@ -2458,29 +2458,6 @@ async function importFromFile(input) {
     alert('Import failed: ' + e.message);
   }
 }
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (!localRaw) return;
-  try {
-    const local = JSON.parse(localRaw);
-    const localAlloc = JSON.parse(localStorage.getItem(ALLOC_KEY)||'{}');
-    // Merge: prefer cloud data for portfolios that exist in both, add local-only ones
-    const cloudIds = new Set(portfolios.map(p=>p.id));
-    const localOnly = local.filter(p=>!cloudIds.has(p.id));
-    portfolios = [...portfolios, ...localOnly];
-    // Merge allocations
-    allocations = { ...localAlloc, ...allocations };
-    save();
-    saveAlloc();
-    await flushSave();
-    localStorage.removeItem(STORAGE_KEY);
-    document.getElementById('migrate-banner').style.display = 'none';
-    localStorage.setItem('migrateDismissed_'+sbUser?.id, '1');
-    renderAll();
-    alert('Migration complete! Your local data has been imported to the cloud.');
-  } catch(e) {
-    alert('Migration failed: ' + e.message);
-  }
-}
 
 function dismissMigrateBanner() {
   document.getElementById('migrate-banner').style.display = 'none';
