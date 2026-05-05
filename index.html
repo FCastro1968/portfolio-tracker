@@ -501,7 +501,7 @@ function load(){
 }
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
-  if (sbUser && sb) scheduleSave();
+  if (appReady && sbUser && sb) scheduleSave();
 }
 function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}}
 function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
@@ -540,7 +540,7 @@ function saveRiskFreeRate(val) {
   riskFreeRate = n;
   localStorage.setItem(RFRATE_KEY, n);
   updateRFDisplay();
-  if (sbUser && sb) scheduleSave();
+  if (appReady && sbUser && sb) scheduleSave();
   return true;
 }
 function updateRFDisplay() {
@@ -1210,12 +1210,12 @@ function loadAlloc() {
 }
 function saveAlloc() {
   try { localStorage.setItem(ALLOC_KEY, JSON.stringify(allocations)); } catch(e) {}
-  if (sbUser && sb) scheduleSave();
+  if (appReady && sbUser && sb) scheduleSave();
 }
 function saveBand(val) {
   const n = parseFloat(val); if (isNaN(n)||n<1) return;
   toleranceBand = n; localStorage.setItem(BAND_KEY, n);
-  if (sbUser && sb) scheduleSave();
+  if (appReady && sbUser && sb) scheduleSave();
 }
 function getHoldingAlloc(hid) { return allocations[hid] || null; }
 function setHoldingAlloc(hid, splits) {
@@ -2232,6 +2232,7 @@ function bootApp() {
     load(); loadApiKey(); loadAlloc(); renderAll();
     if (apiKey) refreshPrices();
     startAutoRefresh();
+    appReady = true;
     setSyncStatus('ok', 'Local mode — use Export in Settings to migrate to cloud');
   } else {
     document.querySelector('.app-shell').style.visibility = 'hidden';
@@ -2250,6 +2251,7 @@ function bootApp() {
 let sbUser = null;
 let syncTimer = null;
 let syncPending = false;
+let appReady = false; // prevents spurious saves during load
 
 /* ---- Auth UI ---- */
 function switchAuthTab(tab) {
@@ -2490,6 +2492,7 @@ async function onSignedIn(user) {
   if (apiKey) refreshPrices();
   startAutoRefresh();
   checkMigrateBanner();
+  appReady = true;
   setSyncStatus('ok', 'Synced ✓');
 }
 
