@@ -2318,7 +2318,9 @@ async function loadFromSupabase() {
   if (!sbUser) return false;
   setSyncStatus('busy', 'Loading…');
   try {
-    const { data, error } = await sb.from('user_data').select('*').eq('user_id', sbUser.id).single();
+    const queryPromise = sb.from('user_data').select('*').eq('user_id', sbUser.id).single();
+    const timeoutPromise = new Promise((_,reject) => setTimeout(()=>reject(new Error('Load timed out')), 8000));
+    const { data, error } = await Promise.race([queryPromise, timeoutPromise]);
     if (error && error.code !== 'PGRST116') throw error; // PGRST116 = no rows
     if (data) {
       // Merge into local state
