@@ -2272,10 +2272,15 @@ function switchAuthTab(tab) {
 }
 
 async function authSubmit() {
+  const errEl = document.getElementById('auth-err');
+  if (!sb) {
+    errEl.textContent = 'Still connecting to server — please wait a moment and try again.';
+    console.error('authSubmit called but sb is null — Supabase not loaded yet');
+    return;
+  }
   const email = document.getElementById('auth-email').value.trim();
   const password = document.getElementById('auth-password').value;
   const tab = document.getElementById('auth-screen').dataset.tab || 'signin';
-  const errEl = document.getElementById('auth-err');
   const msgEl = document.getElementById('auth-msg');
   const btn = document.getElementById('auth-btn');
   errEl.textContent = ''; msgEl.textContent = '';
@@ -2290,7 +2295,6 @@ async function authSubmit() {
     } else {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      // onAuthStateChange will fire and call onSignedIn()
     }
   } catch(e) {
     errEl.textContent = e.message || 'Authentication failed.';
@@ -2525,10 +2529,20 @@ const _origSave = save;
 if (IS_LOCAL) {
   initSupabaseAndBoot();
 } else {
+  // Show loading state on sign-in button while Supabase loads
+  const authBtn = document.getElementById('auth-btn');
+  if (authBtn) { authBtn.textContent = 'Connecting...'; authBtn.disabled = true; }
   const sbScript = document.createElement('script');
   sbScript.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-  sbScript.onload = initSupabaseAndBoot;
-  sbScript.onerror = () => { console.warn('Supabase CDN failed, running local mode'); bootApp(); };
+  sbScript.onload = () => {
+    if (authBtn) { authBtn.textContent = 'Sign in'; authBtn.disabled = false; }
+    initSupabaseAndBoot();
+  };
+  sbScript.onerror = () => {
+    if (authBtn) { authBtn.textContent = 'Sign in'; authBtn.disabled = false; }
+    document.getElementById('auth-err').textContent = 'Could not connect to server. Check your internet connection.';
+    console.warn('Supabase CDN failed');
+  };
   document.head.appendChild(sbScript);
 }
 
