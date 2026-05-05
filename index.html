@@ -1936,105 +1936,157 @@ function taxColor(score) {
 function computeRebalance(port) {
   const a = computeNextDollarAnalysis(port);
 
-  // Build flat list of all holdings with full metadata
-  const holdings = [];
+  // ── Build account registry ──────────────────────────────────────────────
+  // Each account group tracks its holdings, available cash, and proceeds from sells
+  const accountMap = {}; // key = g.id
   (port.groups||[]).forEach(g => {
+    accountMap[g.id] = {
+      g, loc: acctLocation(g.accountType), accountType: g.accountType,
+      name: g.name,
+      cash: 0,       // existing cash/money-market value
+      proceeds: 0,   // will be filled by sells
+      holdings: []
+    };
     (g.holdings||[]).forEach(h => {
-      const val = holdingValue(h); if (!val || val < 100) return; // skip tiny/empty
+      const val = holdingValue(h); if (!val || val < 50) return;
+      const splits = getHoldingAlloc(h.id)||
+        ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null)||[];
+      const isCash = splits.some(s => s.bucket === 'cash');
       const shs = parseFloat(h.shares)||0;
       const price = effPrice(h);
-      const splits = getHoldingAlloc(h.id)||
-        ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
-      const buckets = splits||[];
-      const tScore = taxScore(h, g.accountType, price);
-      const loc = acctLocation(g.accountType);
       const costBasis = h.cost ? parseFloat(h.cost) : null;
       const gainPerShare = (costBasis && price) ? price - costBasis : null;
-      const totalGain = gainPerShare!=null ? gainPerShare * shs : null;
-      holdings.push({ h, g, val, shs, price, buckets, tScore, loc, costBasis, gainPerShare, totalGain, accountType: g.accountType });
+      const totalGain = gainPerShare != null ? gainPerShare * shs : null;
+      const tScore = taxScore(h, g.accountType, price);
+      const rec = { h, g, val, shs, price, splits, tScore, costBasis, gainPerShare, totalGain, isCash };
+      accountMap[g.id].holdings.push(rec);
+      if (isCash) accountMap[g.id].cash += val;
     });
   });
 
-  // Identify overweights → potential sells
-  const overweights = a.bucketAnalysis.filter(x => x.outBand && !x.under && x.tgtPct > 0);
-  const underweights = a.bucketAnalysis.filter(x => x.outBand && x.under && x.tgtPct > 0);
+  const overweights  = a.bucketAnalysis.filter(x => x.outBand && !x.under && x.tgtPct > 0);
+  const underweights = a.bucketAnalysis.filter(x => x.outBand && x.under  && x.tgtPct > 0);
+  const riskOffSurplus = (a.riskOffGap != null && a.riskOffGap > (a.expTarget||0) * 0.05)
+    ? a.riskOffGap : 0;
 
-  // Also check Risk-Off overweight (if surplus > 5% of target, it's a source)
-  const riskOffOverweight = a.riskOffGap != null && a.riskOffGap > (a.expTarget * 0.05) ? a.riskOffGap : 0;
+  // ── Step 1: Build sell list (ranked by tax efficiency) ──────────────────
+  // Sell from overweight buckets + risk-off surplus
+  const sellList = []; // { ticker, acctId, acctName, accountType, loc, amount, shares, tScore, totalGain, gainPct, fromBucket }
 
-  // Build sell candidates: holdings in overweight buckets, sorted by tax efficiency then by contribution to overweight
-  const sellCandidates = [];
+  const addSellsFromBucket = (bucketId, bucketLabel, bucketColor, excessAmt) => {
+    let remaining = excessAmt;
+    // gather candidates across all accounts for this bucket, tax-best first
+    const candidates = [];
+    Object.values(accountMap).forEach(acct => {
+      acct.holdings.forEach(hld => {
+        if (hld.isCash) return; // don't sell cash holdings to rebalance
+        const split = hld.splits.find(s => s.bucket === bucketId);
+        if (!split) return;
+        candidates.push({ ...hld, acct, allocShare: split.pct/100 });
+      });
+    });
+    candidates.sort((a,b) => a.tScore - b.tScore || b.val - a.val);
+    for (const c of candidates) {
+      if (remaining <= 50) break;
+      const maxSell = Math.min(c.val * c.allocShare * 0.95, remaining);
+      if (maxSell < 50) continue;
+      const sellAmt = maxSell;
+      const gainPct = c.gainPerShare && c.costBasis ? (c.gainPerShare/c.costBasis*100) : null;
+      sellList.push({
+        ticker: c.h.ticker, acctId: c.acct.g.id, acctName: c.acct.name,
+        accountType: c.acct.accountType, loc: c.acct.loc,
+        amount: sellAmt, shares: sellAmt / (c.price||1),
+        tScore: c.tScore, totalGain: c.totalGain, gainPct,
+        fromBucket: { id: bucketId, label: bucketLabel, color: bucketColor }
+      });
+      accountMap[c.acct.g.id].proceeds += sellAmt;
+      remaining -= sellAmt;
+    }
+  };
+
   overweights.forEach(ow => {
-    const excess = ow.actVal - ow.tgtVal; // $ amount overweight
-    holdings
-      .filter(hld => hld.buckets.some(s => s.bucket === ow.b.id))
-      .sort((a,b) => a.tScore - b.tScore || b.val - a.val) // tax-efficient first, larger positions first
-      .forEach(hld => {
-        const share = hld.buckets.find(s=>s.bucket===ow.b.id)?.pct/100||1;
-        sellCandidates.push({ ...hld, fromBucket: ow.b, excess, suggestSell$: Math.min(excess * share, hld.val * 0.9) });
-      });
+    addSellsFromBucket(ow.b.id, ow.b.label, ow.b.color, ow.actVal - ow.tgtVal);
   });
-  // Add risk-off surplus candidates (cash/bond positions)
-  if (riskOffOverweight > 0 && a.riskOffShort === false) {
-    holdings
-      .filter(hld => hld.buckets.some(s => BUCKET_MAP[s.bucket]&&!BUCKET_MAP[s.bucket].riskOn))
-      .sort((a,b) => a.tScore - b.tScore)
-      .forEach(hld => {
-        const share = hld.buckets.filter(s=>!BUCKET_MAP[s.bucket]?.riskOn).reduce((sum,s)=>sum+s.pct/100,0);
-        sellCandidates.push({ ...hld, fromBucket:{id:'risk_off',label:'Risk-Off (surplus)',color:'#58a6ff'}, excess: riskOffOverweight, suggestSell$: Math.min(riskOffOverweight * share, hld.val * 0.5) });
-      });
+  if (riskOffSurplus > 0) {
+    addSellsFromBucket('cash', 'Cash & Equivalents', '#8b949e', riskOffSurplus);
   }
 
-  // Deduplicate sell candidates (same holding may appear for multiple overweights)
-  const seenHids = new Set();
-  const sells = sellCandidates.filter(s => { if(seenHids.has(s.h.id)) return false; seenHids.add(s.h.id); return true; });
-
-  // Match sells to underweight buys greedily
-  let remainingUnder = underweights.map(u => ({ ...u, need: u.tgtVal - u.actVal }));
-  const moves = [];
+  // Wash sale check
   const washSaleWarnings = [];
+  sellList.filter(s => s.tScore === 1).forEach(s => {
+    const similar = sellList.filter(s2 => s2.ticker !== s.ticker && s2.fromBucket.id === s.fromBucket.id).map(s2=>s2.ticker);
+    if (similar.length) washSaleWarnings.push({ ticker: s.ticker, similar: [...new Set(similar)] });
+  });
 
-  for (const sell of sells) {
-    if (remainingUnder.length === 0) break;
-    let sellAmount = Math.min(sell.suggestSell$, sell.val);
-    if (sellAmount < 100) continue;
+  // ── Step 2: Build buy list — account-aware, no hard-avoid ──────────────
+  // Available cash per account = existing cash + proceeds from sells
+  const availableByAcct = {}; // acctId → $ available to deploy
+  Object.values(accountMap).forEach(acct => {
+    availableByAcct[acct.g.id] = acct.cash + acct.proceeds;
+  });
 
-    // Wash sale check: if selling at a loss, flag similar tickers
-    if (sell.tScore === 1) {
-      const sameBucketTickers = holdings
-        .filter(h2 => h2.h.id !== sell.h.id && h2.buckets.some(s=>sell.buckets.some(b2=>b2.bucket===s.bucket)))
-        .map(h2=>h2.h.ticker);
-      if (sameBucketTickers.length > 0) {
-        washSaleWarnings.push({ ticker: sell.h.ticker, similar: [...new Set(sameBucketTickers)] });
-      }
-    }
+  const buyList = []; // { bucket, acctId, acctName, accountType, loc, amount, locQuality }
 
-    // Allocate sell proceeds to underweights in order
-    for (const uw of remainingUnder) {
-      if (sellAmount <= 0 || uw.need <= 0) continue;
-      const amount = Math.min(sellAmount, uw.need);
-      // Preferred location for buy
-      const preferredLoc = uw.b.preferred[0] || 'any';
-      const locLabel = {taxable:'Taxable',roth:'Roth IRA',trad:'Traditional IRA',deferred:'401k/403b',hsa:'HSA'}[preferredLoc]||preferredLoc;
+  const needList = underweights.map(u => ({ ...u, need: u.tgtVal - u.actVal }));
 
-      // Location improvement check
-      const sellLocOk = !uw.b.hardAvoid.includes(sell.loc) && !uw.b.softAvoid.includes(sell.loc);
-      const buyLocOk = uw.b.preferred.includes(preferredLoc);
+  for (const uw of needList) {
+    let remaining = uw.need;
 
-      moves.push({
-        sell: { ticker: sell.h.ticker, account: sell.g.name, accountType: sell.accountType, amount, shares: amount / (sell.price||1), tScore: sell.tScore, totalGain: sell.totalGain, gainPct: sell.gainPerShare&&sell.costBasis ? (sell.gainPerShare/sell.costBasis*100) : null },
-        buy:  { bucket: uw.b, amount, preferredLoc, locLabel },
-        allocImpact: `${uw.b.label} ${((amount/a.riskOnExCoEq||1)*100).toFixed(1)}pp`,
-        locImprove: !sellLocOk || buyLocOk
+    // Rank accounts by location quality for this bucket (preferred → acceptable → softAvoid)
+    // Never use hardAvoid accounts
+    const rankedAccts = Object.values(accountMap)
+      .map(acct => {
+        const loc = acct.loc;
+        const avail = availableByAcct[acct.g.id] || 0;
+        if (avail < 50) return null;
+        if (uw.b.hardAvoid.includes(loc)) return null; // hard skip
+        let quality = 3;
+        if (uw.b.preferred.includes(loc)) quality = 1;
+        else if (!uw.b.softAvoid.includes(loc)) quality = 2; // acceptable
+        // softAvoid = quality 3 (allowed but flagged)
+        return { acct, avail, quality };
+      })
+      .filter(Boolean)
+      .sort((a,b) => a.quality - b.quality || b.avail - a.avail);
+
+    for (const ranked of rankedAccts) {
+      if (remaining <= 50) break;
+      const deploy = Math.min(ranked.avail, remaining);
+      if (deploy < 50) continue;
+      const locQuality = ranked.quality; // 1=preferred, 2=acceptable, 3=softAvoid
+      buyList.push({
+        bucket: uw.b, acctId: ranked.acct.g.id,
+        acctName: ranked.acct.name, accountType: ranked.acct.accountType,
+        loc: ranked.acct.loc, amount: deploy, locQuality
       });
-
-      sellAmount -= amount;
-      uw.need -= amount;
+      availableByAcct[ranked.acct.g.id] -= deploy;
+      remaining -= deploy;
     }
-    remainingUnder = remainingUnder.filter(u => u.need > 50);
+
+    // If we still have remaining need but no valid accounts, flag it
+    if (remaining > 50) {
+      buyList.push({
+        bucket: uw.b, acctId: null, acctName: 'No valid account',
+        accountType: '', loc: '', amount: remaining, locQuality: 99, unfunded: true
+      });
+    }
   }
 
-  return { moves, overweights, underweights, washSaleWarnings, riskOffOverweight, a };
+  // ── Step 3: Build account-level action summary ─────────────────────────
+  const acctActions = {}; // acctId → { sells: [], buys: [], netFlow: 0 }
+  const allAcctIds = new Set([...sellList.map(s=>s.acctId), ...buyList.map(b=>b.acctId).filter(Boolean)]);
+  allAcctIds.forEach(id => {
+    acctActions[id] = { acct: accountMap[id], sells: [], buys: [], netFlow: 0 };
+  });
+  sellList.forEach(s => { acctActions[s.acctId]?.sells.push(s); acctActions[s.acctId] && (acctActions[s.acctId].netFlow -= s.amount); });
+  buyList.filter(b=>b.acctId).forEach(b => { acctActions[b.acctId]?.buys.push(b); acctActions[b.acctId] && (acctActions[b.acctId].netFlow += b.amount); });
+
+  const totalSell = sellList.reduce((s,x)=>s+x.amount,0);
+  const totalBuy  = buyList.filter(b=>!b.unfunded).reduce((s,x)=>s+x.amount,0);
+  const unfunded  = buyList.filter(b=>b.unfunded);
+
+  return { sellList, buyList, acctActions, overweights, underweights,
+           washSaleWarnings, totalSell, totalBuy, unfunded, a };
 }
 
 function openRebalance() {
@@ -2050,90 +2102,132 @@ function openRebalance() {
 function renderRebalance(port) {
   const body = document.getElementById('rebalance-body'); if(!body) return;
   const rb = computeRebalance(port);
-  const { moves, overweights, underweights, washSaleWarnings, riskOffOverweight, a } = rb;
+  const { sellList, buyList, acctActions, overweights, underweights,
+          washSaleWarnings, totalSell, totalBuy, unfunded, a } = rb;
+
+  const locQL = q => q===1
+    ? `<span style="color:var(--green);font-size:10px">✓ preferred</span>`
+    : q===3 ? `<span style="color:#e3b341;font-size:10px">⚠ soft avoid</span>`
+    : `<span style="color:var(--text3);font-size:10px">acceptable</span>`;
 
   let out = '';
 
   // Summary bar
-  const totalRebalance = moves.reduce((s,m)=>s+m.sell.amount,0);
-  out += `<div style="display:flex;flex-wrap:wrap;gap:16px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:16px;font-size:12px">
-    <div><span style="color:var(--text3)">Overweight buckets:</span> <strong>${overweights.length}</strong></div>
-    <div><span style="color:var(--text3)">Underweight buckets:</span> <strong>${underweights.length}</strong></div>
-    <div><span style="color:var(--text3)">Suggested moves:</span> <strong>${moves.length}</strong></div>
-    <div><span style="color:var(--text3)">Total to rebalance:</span> <strong>${fmt$(totalRebalance)}</strong></div>
-    <div style="font-size:11px;color:var(--text3);margin-left:auto;align-self:center">Assumes long-term holding periods for all taxable positions</div>
+  out += `<div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:16px;font-size:12px;align-items:center">
+    <span><span style="color:var(--text3)">Sell:</span> <strong style="color:var(--red)">${fmt$(totalSell)}</strong> · ${sellList.length} position${sellList.length!==1?'s':''}</span>
+    <span style="color:var(--border2)">→</span>
+    <span><span style="color:var(--text3)">Buy:</span> <strong style="color:var(--green)">${fmt$(totalBuy)}</strong> · ${buyList.filter(b=>!b.unfunded).length} purchase${buyList.filter(b=>!b.unfunded).length!==1?'s':''}</span>
+    ${unfunded.length?`<span style="color:var(--red)">⚠ ${fmt$(unfunded.reduce((s,u)=>s+u.amount,0))} unfunded</span>`:''}
+    <span style="margin-left:auto;font-size:11px;color:var(--text3)">Long-term assumed · Hard location conflicts excluded</span>
   </div>`;
 
-  if (!moves.length) {
-    out += `<div style="background:var(--green-bg);border:1px solid rgba(63,185,80,0.25);border-radius:var(--radius-lg);padding:24px;text-align:center;font-size:14px;color:var(--green);font-weight:500">
-      &#10003; Portfolio is within tolerance bands — no rebalancing needed.
-    </div>`;
+  if (!sellList.length && !buyList.length) {
+    out += `<div style="background:var(--green-bg);border:1px solid rgba(63,185,80,0.25);border-radius:var(--radius-lg);padding:24px;text-align:center;font-size:14px;color:var(--green);font-weight:500">✓ Portfolio is within tolerance — no rebalancing needed.</div>`;
     body.innerHTML = out; return;
   }
 
-  // Wash sale warnings
   if (washSaleWarnings.length) {
-    out += `<div class="unassigned-warn" style="margin-bottom:14px">
-      &#9888; <strong>Wash sale caution:</strong> If harvesting these losses, avoid buying substantially similar tickers within 30 days:
-      ${washSaleWarnings.map(w=>`<strong>${w.ticker}</strong> → avoid: ${w.similar.join(', ')}`).join(' &nbsp;·&nbsp; ')}
-    </div>`;
+    out += `<div class="unassigned-warn" style="margin-bottom:12px">⚠ <strong>Wash sale caution:</strong> ${washSaleWarnings.map(w=>`<strong>${esc(w.ticker)}</strong> → avoid: ${w.similar.join(', ')}`).join(' · ')}</div>`;
   }
 
-  // Suggested moves table
-  out += `<div class="section-bar"><span class="section-title">Suggested moves — sorted by tax efficiency</span></div>
-  <div style="overflow-x:auto;margin-bottom:20px"><table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
-    <thead style="background:var(--surface2)"><tr>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">Sell</th>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">From account</th>
-      <th style="padding:9px 12px;text-align:right;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">Amount</th>
-      <th style="padding:9px 12px;text-align:right;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">~Shares</th>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">Tax impact</th>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">&#8594; Buy bucket</th>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">Preferred location</th>
-      <th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">Alloc impact</th>
-    </tr></thead><tbody>`;
+  // Two-panel grid
+  out += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">`;
 
-  moves.sort((a,b)=>a.sell.tScore-b.sell.tScore).forEach((m,i) => {
-    const rowBg = i%2===0?'var(--surface)':'var(--surface2)';
-    const tColor = taxColor(m.sell.tScore);
-    const tLabel = taxLabel(m.sell.tScore);
-    const gainNote = m.sell.totalGain != null
-      ? ` (${m.sell.totalGain>=0?'+':''}${fmt$(m.sell.totalGain)}${m.sell.gainPct!=null?', '+m.sell.gainPct.toFixed(0)+'%':''})`
-      : '';
-    const locIcon = m.locImprove ? ' <span style="color:var(--green);font-size:10px">&#8593; loc</span>' : '';
+  // LEFT — Account-by-account actions
+  out += `<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:10px">Actions by account</div>`;
+  Object.values(acctActions)
+    .sort((a,b)=>(b.sells.reduce((s,x)=>s+x.amount,0))-(a.sells.reduce((s,x)=>s+x.amount,0)))
+    .forEach(aa => {
+      if (!aa.sells.length && !aa.buys.length) return;
+      const netFlow = aa.buys.reduce((s,x)=>s+x.amount,0) - aa.sells.reduce((s,x)=>s+x.amount,0);
+      out += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <strong style="font-size:13px">${esc(aa.acct.name)}</strong>
+          <span style="font-size:11px;color:var(--text3)">${esc(aa.acct.accountType)}</span>
+        </div>`;
+      aa.sells.forEach(s => {
+        const gainNote = s.totalGain!=null ? ` (${s.totalGain>=0?'+':''}${fmt$(s.totalGain)})` : '';
+        out += `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px;align-items:center">
+          <span>SELL <span class="ticker">${esc(s.ticker)}</span> <span style="color:var(--text3);font-size:10px">← ${esc(s.fromBucket.label)}</span></span>
+          <span style="display:flex;align-items:center;gap:6px">
+            <span style="color:${taxColor(s.tScore)};font-size:10px;font-weight:500">${taxLabel(s.tScore)}${gainNote}</span>
+            <strong style="color:var(--red);font-family:var(--mono)">${fmt$(s.amount)}</strong>
+            <span style="color:var(--text3);font-size:10px">~${s.shares.toFixed(2)}sh</span>
+          </span>
+        </div>`;
+      });
+      aa.buys.forEach(b => {
+        out += `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px;align-items:center">
+          <span>BUY <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${b.bucket.color};margin:0 3px;vertical-align:middle"></span>${esc(b.bucket.label)}</span>
+          <span style="display:flex;align-items:center;gap:6px">
+            ${locQL(b.locQuality)}
+            <strong style="color:var(--green);font-family:var(--mono)">${fmt$(b.amount)}</strong>
+          </span>
+        </div>`;
+      });
+      out += `<div style="text-align:right;margin-top:5px;font-size:11px;color:var(--text3)">Net: <strong style="color:${netFlow>=0?'var(--green)':'var(--red)'}">${netFlow>=0?'+':''}${fmt$(netFlow)}</strong></div>
+      </div>`;
+    });
+  out += `</div>`;
 
-    out += `<tr style="background:${rowBg}">
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border)"><span class="ticker">${esc(m.sell.ticker)}</span></td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text2)">${esc(m.sell.account)}<br><small style="color:var(--text3)">${esc(m.sell.accountType)}</small></td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);font-weight:600">${fmt$(m.sell.amount)}</td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--text2)">${m.sell.shares.toFixed(3)}</td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:12px"><span style="color:${tColor};font-weight:500">${tLabel}</span><span style="color:var(--text3);font-size:11px">${gainNote}</span></td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border)">
-        <span class="bucket-dot" style="background:${m.buy.bucket.color};display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle"></span>
-        <span style="font-size:12px">${esc(m.buy.bucket.label)}</span>${locIcon}
-      </td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${esc(m.buy.locLabel)}</td>
-      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text2)">${esc(m.allocImpact)}</td>
-    </tr>`;
-  });
-  out += '</tbody></table></div>';
+  // RIGHT — Why + available cash
+  out += `<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:10px">Why these moves</div>`;
 
-  // AI buy suggestions
+  if (overweights.length) {
+    out += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px">
+      <div style="font-size:10px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">▲ Overweight — trimming</div>`;
+    overweights.forEach(ow => out += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${ow.b.color};margin-right:5px;vertical-align:middle"></span>${ow.b.label}</span>
+      <span style="color:var(--red)">${ow.actRiskOnPct.toFixed(1)}% vs ${ow.tgtPct}% &nbsp;<span style="color:var(--text3)">${fmt$(ow.actVal-ow.tgtVal)} excess</span></span>
+    </div>`);
+    out += `</div>`;
+  }
+
+  if (underweights.length) {
+    out += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px">
+      <div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">▼ Underweight — building</div>`;
+    underweights.forEach(uw => out += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${uw.b.color};margin-right:5px;vertical-align:middle"></span>${uw.b.label}</span>
+      <span style="color:var(--accent)">${uw.actRiskOnPct.toFixed(1)}% vs ${uw.tgtPct}% &nbsp;<span style="color:var(--text3)">${fmt$(uw.tgtVal-uw.actVal)} needed</span></span>
+    </div>`);
+    out += `</div>`;
+  }
+
+  // Cash available per account
+  const acctCashRows = Object.values(acctActions).filter(aa=>(aa.acct.cash+aa.acct.proceeds)>50);
+  if (acctCashRows.length) {
+    out += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 14px;margin-bottom:10px">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">Cash available (existing + proceeds)</div>`;
+    acctCashRows.forEach(aa => {
+      const total = aa.acct.cash + aa.acct.proceeds;
+      out += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0">
+        <span style="color:var(--text2)">${esc(aa.acct.name)}</span>
+        <span style="font-family:var(--mono)">${fmt$(total)}${aa.acct.proceeds>0?` <span style="font-size:10px;color:var(--text3)">(+${fmt$(aa.acct.proceeds)} proceeds)</span>`:''}</span>
+      </div>`;
+    });
+    out += `</div>`;
+  }
+
+  if (buyList.some(b=>b.locQuality===3)) {
+    out += `<div style="background:rgba(227,179,65,0.08);border:1px solid rgba(227,179,65,0.25);border-radius:var(--radius);padding:10px 12px;font-size:11px;color:#c88d00;margin-bottom:8px">⚠ Some buys land in soft-avoid accounts — no better account had available cash. Redirect future contributions to improve location over time.</div>`;
+  }
+  if (unfunded.length) {
+    out += `<div style="background:var(--red-bg);border:1px solid rgba(248,81,73,0.25);border-radius:var(--radius);padding:10px 12px;font-size:11px;color:var(--red)">⚠ Could not fund: ${unfunded.map(u=>esc(u.bucket.label)).join(', ')} — no valid accounts had available cash. Add funds or sell additional positions first.</div>`;
+  }
+
+  out += `</div></div>`; // close right panel + grid
+
+  // AI suggestions
   out += `<div class="section-bar"><span class="section-title">AI buy suggestions</span></div>`;
   if (!anthropicKey) {
-    out += `<div style="font-size:13px;color:var(--text2);padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
-      Add an Anthropic API key in ⚙ Settings to get AI ticker suggestions for each buy bucket.
-    </div>`;
+    out += `<div style="font-size:13px;color:var(--text2);padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">Add an Anthropic API key in ⚙ Settings for AI ticker suggestions.</div>`;
   } else {
-    out += `<div style="font-size:12px;color:var(--text2);margin-bottom:10px">
-      Get specific ticker suggestions for each underweight bucket, accounting for what you're selling and what you already own.
-    </div>
-    <button class="btn btn-primary" onclick="aiRebalanceSuggest('${port.id}')">&#10024; Get AI buy suggestions</button>
-    <div id="rebalance-ai-body" style="margin-top:14px"></div>`;
+    out += `<button class="btn btn-primary" onclick="aiRebalanceSuggest('${port.id}')">✨ Get AI buy suggestions</button><div id="rebalance-ai-body" style="margin-top:14px"></div>`;
   }
 
   body.innerHTML = out;
 }
+
 
 async function aiRebalanceSuggest(portId) {
   const port = portfolios.find(p=>p.id===portId); if(!port) return;
@@ -2141,17 +2235,18 @@ async function aiRebalanceSuggest(portId) {
   if(btn){btn.textContent='⏳ Thinking…';btn.disabled=true;}
 
   const rb = computeRebalance(port);
-  const buyBuckets = [...new Set(rb.moves.map(m=>m.buy.bucket.id))];
+  const buyBuckets = [...new Set(rb.buyList.filter(b=>!b.unfunded).map(m=>m.bucket.id))];
   const a = rb.a;
 
   const bucketContext = buyBuckets.map(bid => {
     const b = BUCKET_MAP[bid]; if(!b) return '';
-    const selling = rb.moves.filter(m=>m.buy.bucket.id===bid).map(m=>m.sell.ticker).join(', ');
+    const selling = rb.sellList.filter(s=>rb.buyList.some(bu=>bu.bucket.id===bid&&bu.acctId===s.acctId)).map(s=>s.ticker).join(', ');
     const existing = [...new Set(a.holdingsByBucket[bid]||[])].join(', ')||'none';
-    const prefLoc = b.preferred.map(l=>({taxable:'Taxable',roth:'Roth IRA',trad:'Traditional IRA',deferred:'401k/403b'}[l]||l)).join(' or ');
-    const amount = rb.moves.filter(m=>m.buy.bucket.id===bid).reduce((s,m)=>s+m.buy.amount,0);
-    return `${b.label}: buy ~${fmt$(amount)}, preferred in ${prefLoc}. Selling: ${selling||'proceeds from overweights'}. Already own: ${existing}.`;
-  }).join('\n');
+    const buysForBucket = rb.buyList.filter(bu=>bu.bucket.id===bid&&!bu.unfunded);
+    const amount = buysForBucket.reduce((s,bu)=>s+bu.amount,0);
+    const preferredAccts = [...new Set(buysForBucket.map(bu=>bu.acctName+' ('+bu.accountType+')'))].join(', ');
+    return `${b.label}: deploy ~${fmt$(amount)} in ${preferredAccts}. Already own: ${existing}. Selling to fund: ${selling||'existing cash'}.`;
+  }).filter(Boolean).join('\n');
 
   const prompt = `You are a financial advisor for a US investor who is 14 months from retirement (July 2027), rebalancing their portfolio.
 
@@ -2499,8 +2594,6 @@ async function onSignedIn(user) {
 }
 
 /* ---- Patch save() to also schedule cloud sync ---- */
-const _origSave = save;
-// We'll redefine save below after it's declared
 
 // Boot — called after Supabase script loads (or immediately if local)
 if (IS_LOCAL) {
