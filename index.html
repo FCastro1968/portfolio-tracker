@@ -2476,7 +2476,6 @@ async function onSignedIn(user) {
   loadRiskFreeRate();
   const loaded = await loadFromSupabase();
   if (!loaded) {
-    // Fall back to localStorage
     load();
     loadAlloc();
   }
@@ -2484,11 +2483,14 @@ async function onSignedIn(user) {
     portfolios = [{id:uid(),name:'My Portfolio',owner:'',groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:[]}]}];
   }
   activeId = portfolios[0].id;
+  // Clear any spurious saves triggered during load
+  syncPending = false;
+  if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   renderAll();
   if (apiKey) refreshPrices();
   startAutoRefresh();
   checkMigrateBanner();
-  setSyncStatus('ok', 'Synced');
+  setSyncStatus('ok', 'Synced ✓');
 }
 
 /* ---- Patch save() to also schedule cloud sync ---- */
