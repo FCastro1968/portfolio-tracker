@@ -2339,9 +2339,9 @@ async function loadFromSupabase() {
         if (s.band) { toleranceBand = s.band; localStorage.setItem(BAND_KEY, s.band); }
         if (s.rfr)  { riskFreeRate = s.rfr; }
       }
-      // Also save to localStorage as cache
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios));
-      saveAlloc();
+      // Also save to localStorage as cache — use direct localStorage write to avoid triggering cloud sync
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
+      try { localStorage.setItem(ALLOC_KEY, JSON.stringify(allocations)); } catch(e) {}
     }
     setSyncStatus('ok', 'Synced');
     return true;
@@ -2361,24 +2361,26 @@ function scheduleSave() {
 }
 
 async function flushSave() {
-  if (!sbUser || !syncPending) return;
+  if (!sbUser || !syncPending) { setSyncStatus('ok', 'Saved ✓'); return; }
   syncPending = false;
+  setSyncStatus('busy', 'Saving…');
   const settings = {
     theme: localStorage.getItem(THEME_KEY)||'dark',
     band: toleranceBand,
     rfr: riskFreeRate
   };
   const payload = { user_id: sbUser.id, portfolios, allocations, settings };
-  // Add a 10-second timeout so it never hangs forever
-  const timeoutPromise = new Promise((_,reject) => setTimeout(()=>reject(new Error('Request timed out after 10s')),10000));
   try {
-    const savePromise = sb.from('user_data').upsert(payload, { onConflict: 'user_id' });
-    const { error } = await Promise.race([savePromise, timeoutPromise]);
+    const result = await Promise.race([
+      sb.from('user_data').upsert(payload, { onConflict: 'user_id' }),
+      new Promise((_,reject) => setTimeout(() => reject(new Error('Timed out after 10s')), 10000))
+    ]);
+    const error = result?.error;
     if (error) throw error;
     setSyncStatus('ok', 'Saved ✓');
   } catch(e) {
-    console.error('Supabase save error:', e.message);
-    setSyncStatus('err', e.message.includes('timed out') ? 'Timeout — check Supabase URL config' : 'Save failed: '+e.message.slice(0,40));
+    console.error('flushSave error:', e.message);
+    setSyncStatus('err', e.message.slice(0,50));
     syncPending = true;
   }
 }
