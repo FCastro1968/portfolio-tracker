@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Portfolio Tracker</title>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
@@ -260,6 +259,10 @@
       <button class="btn btn-sm" onclick="manualRefresh()">&#8635; Refresh</button>
       <button class="btn btn-sm" onclick="openOptionsModal()">&#128200; Options</button>
       <button class="btn btn-sm" onclick="openAllocModal()">&#9685; Allocations</button>
+      <label class="btn btn-sm btn-ghost" style="cursor:pointer" title="Import portfolio data from JSON file">
+        &#8679; Import
+        <input type="file" accept=".json" style="display:none" onchange="importFromFile(this)" />
+      </label>
       <button class="icon-btn" onclick="openModal('modal-settings')" title="Settings">&#9881;</button>
       <button class="btn btn-sm btn-ghost" onclick="signOut()" title="Sign out" style="font-size:11px">&#8594; Out</button>
     </div>
@@ -315,6 +318,10 @@
     <div class="settings-row" id="settings-delete-port-row">
       <div><div class="settings-label">Delete portfolio</div><div class="settings-sub" id="settings-delete-port-sub"></div></div>
       <button class="btn btn-sm btn-danger" onclick="deleteCurrentPortfolio()">Delete</button>
+    </div>
+    <div class="settings-row">
+      <div><div class="settings-label">Export data</div><div class="settings-sub">Download all portfolios as JSON backup</div></div>
+      <button class="btn btn-sm btn-ghost" onclick="exportData()">&#8681; Export</button>
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Clear all data</div><div class="settings-sub">Delete every portfolio permanently</div></div>
@@ -476,6 +483,15 @@
 
 
 <script>
+// MUST be first — hide auth screen immediately if running locally
+if (location.protocol === 'file:') {
+  document.addEventListener('DOMContentLoaded', function() {
+    const auth = document.getElementById('auth-screen');
+    const app  = document.querySelector('.app-shell');
+    if (auth) auth.style.display = 'none';
+    if (app)  app.style.visibility = 'visible';
+  });
+}
 const STORAGE_KEY='portfolioTracker_v2',FINNHUB_KEY='portfolioTracker_finnhubKey',NAME_CACHE_KEY='portfolioTracker_nameCache',THEME_KEY='portfolioTracker_theme',ANTHROPIC_KEY='portfolioTracker_anthropicKey';
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
 let portfolios=[],activeId=null,prices={},nameCache={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
@@ -494,7 +510,7 @@ function load(){
 }
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
-  if (sbUser) scheduleSave();
+  if (sbUser && sb) scheduleSave();
 }
 function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}}
 function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
@@ -533,7 +549,7 @@ function saveRiskFreeRate(val) {
   riskFreeRate = n;
   localStorage.setItem(RFRATE_KEY, n);
   updateRFDisplay();
-  if (sbUser) scheduleSave();
+  if (sbUser && sb) scheduleSave();
   return true;
 }
 function updateRFDisplay() {
@@ -1203,12 +1219,12 @@ function loadAlloc() {
 }
 function saveAlloc() {
   try { localStorage.setItem(ALLOC_KEY, JSON.stringify(allocations)); } catch(e) {}
-  if (sbUser) scheduleSave();
+  if (sbUser && sb) scheduleSave();
 }
 function saveBand(val) {
   const n = parseFloat(val); if (isNaN(n)||n<1) return;
   toleranceBand = n; localStorage.setItem(BAND_KEY, n);
-  if (sbUser) scheduleSave();
+  if (sbUser && sb) scheduleSave();
 }
 function getHoldingAlloc(hid) { return allocations[hid] || null; }
 function setHoldingAlloc(hid, splits) {
@@ -2205,7 +2221,41 @@ JSON only, no markdown.`;
 const SUPABASE_URL  = 'https://phttrvaqnmqldoyogrsl.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBodHRydmFxbm1xbGRveW9ncnNsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5NDQ5NTYsImV4cCI6MjA5MzUyMDk1Nn0.IQ48b-o5EbC8dsy_9OkAcs3GESjxWk8-ComDxOnS8IM';
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+const IS_LOCAL = location.protocol === 'file:';
+let sb = null;
+
+function initSupabaseAndBoot() {
+  if (!IS_LOCAL && typeof supabase !== 'undefined') {
+    sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+  }
+  bootApp();
+}
+
+function bootApp() {
+  loadTheme();
+  if (IS_LOCAL || !sb) {
+    const auth = document.getElementById('auth-screen');
+    const app  = document.querySelector('.app-shell');
+    if (auth) auth.style.display = 'none';
+    if (app)  app.style.visibility = 'visible';
+    load(); loadApiKey(); loadAlloc(); renderAll();
+    if (apiKey) refreshPrices();
+    startAutoRefresh();
+    setSyncStatus('ok', 'Local mode — use Export in Settings to migrate to cloud');
+  } else {
+    document.querySelector('.app-shell').style.visibility = 'hidden';
+    document.getElementById('auth-screen').style.display = 'flex';
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        await onSignedIn(session.user);
+      } else {
+        sbUser = null;
+        showAuthScreen();
+        if (refreshTimer) clearInterval(refreshTimer);
+      }
+    });
+  }
+}
 let sbUser = null;
 let syncTimer = null;
 let syncPending = false;
@@ -2341,18 +2391,69 @@ async function flushSave() {
 /* ---- Migration: local → cloud ---- */
 function checkMigrateBanner() {
   const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (!localRaw) return;
-  try {
-    const local = JSON.parse(localRaw);
-    // Show banner only if local has portfolios with actual holdings
-    const hasHoldings = local.some(p => p.groups?.some(g => g.holdings?.length > 0) || p.holdings?.length > 0);
-    if (hasHoldings && !localStorage.getItem('migrateDismissed_'+sbUser?.id)) {
-      document.getElementById('migrate-banner').style.display = 'flex';
-    }
-  } catch(e) {}
+  const banner = document.getElementById('migrate-banner');
+  if (!banner) return;
+  // Always show import option when logged in — user may have exported from local file
+  banner.style.display = 'flex';
+  banner.innerHTML = `
+    <span style="font-size:12px;color:var(--text)">&#9729; Import local portfolio data to cloud</span>
+    <div style="display:flex;gap:8px;flex-shrink:0">
+      <label class="btn btn-sm btn-primary" style="cursor:pointer">
+        &#8679; Import JSON
+        <input type="file" accept=".json" style="display:none" onchange="importFromFile(this)" />
+      </label>
+      <button class="btn btn-xs btn-ghost" onclick="dismissMigrateBanner()">Dismiss</button>
+    </div>`;
 }
 
-async function migrateLocalData() {
+function exportData() {
+  const payload = {
+    portfolios: JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'),
+    allocations: JSON.parse(localStorage.getItem(ALLOC_KEY) || '{}'),
+    settings: {
+      theme: localStorage.getItem(THEME_KEY) || 'dark',
+      band: parseFloat(localStorage.getItem(BAND_KEY)) || 20,
+      rfr: parseFloat(localStorage.getItem(RFRATE_KEY)) || 3.3
+    }
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'portfolio-tracker-export.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importFromFile(input) {
+  const file = input.files[0]; if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!data.portfolios) throw new Error('Invalid export file — no portfolios found');
+    // Migrate schema
+    portfolios = data.portfolios.map(p => {
+      if (!p.groups) return {...p, groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:p.holdings||[]}], holdings:undefined};
+      return {...p, groups:p.groups.map(g=>({accountType:'',notes:'',...g}))};
+    });
+    portfolios.forEach(p => {
+      if (!p.riskOnTargets) p.riskOnTargets = {...DEFAULT_TARGETS};
+      if (p.expenseTarget==null) p.expenseTarget = 0;
+    });
+    if (data.allocations) allocations = data.allocations;
+    if (data.settings?.band) toleranceBand = data.settings.band;
+    if (data.settings?.rfr) riskFreeRate = data.settings.rfr;
+    if (data.settings?.theme) applyTheme(data.settings.theme);
+    activeId = portfolios[0]?.id;
+    save(); saveAlloc();
+    await flushSave();
+    document.getElementById('migrate-banner').style.display = 'none';
+    renderAll();
+    if (apiKey) refreshPrices();
+    alert(`Imported ${portfolios.length} portfolio${portfolios.length!==1?'s':''} with ${portfolios.reduce((n,p)=>n+p.groups.reduce((m,g)=>m+(g.holdings?.length||0),0),0)} holdings. All saved to cloud.`);
+  } catch(e) {
+    alert('Import failed: ' + e.message);
+  }
+}
   const localRaw = localStorage.getItem(STORAGE_KEY);
   if (!localRaw) return;
   try {
@@ -2420,20 +2521,16 @@ async function onSignedIn(user) {
 const _origSave = save;
 // We'll redefine save below after it's declared
 
-loadTheme(); // apply theme before anything renders
-
-/* ---- Bootstrap: wait for auth state ---- */
-document.querySelector('.app-shell').style.visibility = 'hidden';
-
-sb.auth.onAuthStateChange(async (event, session) => {
-  if (session?.user) {
-    await onSignedIn(session.user);
-  } else {
-    sbUser = null;
-    showAuthScreen();
-    if (refreshTimer) clearInterval(refreshTimer);
-  }
-});
+// Boot — called after Supabase script loads (or immediately if local)
+if (IS_LOCAL) {
+  initSupabaseAndBoot();
+} else {
+  const sbScript = document.createElement('script');
+  sbScript.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+  sbScript.onload = initSupabaseAndBoot;
+  sbScript.onerror = () => { console.warn('Supabase CDN failed, running local mode'); bootApp(); };
+  document.head.appendChild(sbScript);
+}
 
 loadRiskFreeRate();
 if(apiKey)refreshPrices();
