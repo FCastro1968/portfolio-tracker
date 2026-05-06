@@ -483,7 +483,17 @@
 
 
 <script>
-const STORAGE_KEY='portfolioTracker_v2',FINNHUB_KEY='portfolioTracker_finnhubKey',NAME_CACHE_KEY='portfolioTracker_nameCache',THEME_KEY='portfolioTracker_theme',ANTHROPIC_KEY='portfolioTracker_anthropicKey';
+const STORAGE_KEY='portfolioTracker_v2',FINNHUB_KEY='portfolioTracker_finnhubKey',NAME_CACHE_KEY='portfolioTracker_nameCache',THEME_KEY='portfolioTracker_theme',ANTHROPIC_KEY='portfolioTracker_anthropicKey',ACTIVE_KEY='portfolioTracker_activeId';
+
+function setActiveId(id) {
+  activeId = id;
+  try { localStorage.setItem(ACTIVE_KEY, id); } catch(e) {}
+}
+function restoreActiveId() {
+  const saved = localStorage.getItem(ACTIVE_KEY);
+  if (saved && portfolios.some(p => p.id === saved)) activeId = saved;
+  else restoreActiveId();
+}
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
 let portfolios=[],activeId=null,prices={},nameCache={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
 let collapsedGroups = new Set();   // set of group ids that are collapsed
@@ -497,7 +507,7 @@ function load(){
     return{...p,groups:p.groups.map(g=>({accountType:'',notes:'',...g}))};
   });
   if(!portfolios.length)portfolios=[{id:uid(),name:'My Portfolio',owner:'',groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:[]}]}];
-  activeId=portfolios[0].id;
+  restoreActiveId();
 }
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
@@ -887,10 +897,10 @@ function clearAllData(){if(!confirm('Delete ALL portfolios and holdings? This ca
 function deleteCurrentPortfolio(){
   const port=getPort();if(!port)return;
   if(!confirm(`Delete portfolio "${port.name}" and all its holdings? This cannot be undone.`))return;
-  portfolios=portfolios.filter(p=>p.id!==port.id);activeId=portfolios[0]?.id;
+  portfolios=portfolios.filter(p=>p.id!==port.id);restoreActiveId();
   save();closeModal('modal-settings');renderAll();
 }
-function switchPort(id){activeId=id;renderTabs();renderView();}
+function switchPort(id){setActiveId(id);renderTabs();renderView();}
 
 function openAddPort(){editingPortId=null;document.getElementById('modal-port-title').textContent='New portfolio';document.getElementById('btn-save-port').textContent='Create';document.getElementById('inp-port-name').value='';document.getElementById('inp-port-owner').value='';document.getElementById('err-port').style.display='none';openModal('modal-portfolio');setTimeout(()=>document.getElementById('inp-port-name').focus(),50);}
 function openEditPort(id){const p=portfolios.find(x=>x.id===id);if(!p)return;editingPortId=id;document.getElementById('modal-port-title').textContent='Edit portfolio';document.getElementById('btn-save-port').textContent='Save changes';document.getElementById('inp-port-name').value=p.name;document.getElementById('inp-port-owner').value=p.owner||'';document.getElementById('err-port').style.display='none';openModal('modal-portfolio');setTimeout(()=>document.getElementById('inp-port-name').focus(),50);}
@@ -898,7 +908,7 @@ function savePortfolio(){
   const name=document.getElementById('inp-port-name').value.trim(),owner=document.getElementById('inp-port-owner').value.trim(),err=document.getElementById('err-port');
   if(!name){err.textContent='Please enter a name.';err.style.display='block';return;}err.style.display='none';
   if(editingPortId){const p=portfolios.find(x=>x.id===editingPortId);if(p){p.name=name;p.owner=owner;}}
-  else{const p={id:uid(),name,owner,groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:[]}]};portfolios.push(p);activeId=p.id;}
+  else{const p={id:uid(),name,owner,groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:[]}]};portfolios.push(p);setActiveId(p.id);}
   save();closeModal('modal-portfolio');renderAll();
 }
 
@@ -960,7 +970,7 @@ function openEditHolding(gid,hid,returnModal_){
   if(!g)return;
   const hd=g.holdings?.find(h=>h.id===hid);if(!hd)return;
   // Switch active portfolio if needed so saveHolding works correctly
-  if(port&&port.id!==activeId){activeId=port.id;renderTabs();}
+  if(port&&port.id!==activeId){setActiveId(port.id);renderTabs();}
   returnToModal=returnModal_||null;
   // Close the originating modal before opening the holding editor
   if(returnToModal) closeModal(returnToModal);
@@ -2539,7 +2549,7 @@ async function importFromFile(input) {
     if (data.settings?.band) toleranceBand = data.settings.band;
     if (data.settings?.rfr) riskFreeRate = data.settings.rfr;
     if (data.settings?.theme) applyTheme(data.settings.theme);
-    activeId = portfolios[0]?.id;
+    restoreActiveId();
     save(); saveAlloc();
     await flushSave();
     document.getElementById('migrate-banner').style.display = 'none';
@@ -2581,7 +2591,7 @@ async function onSignedIn(user) {
   if (!portfolios.length) {
     portfolios = [{id:uid(),name:'My Portfolio',owner:'',groups:[{id:uid(),name:'General',accountType:'',notes:'',holdings:[]}]}];
   }
-  activeId = portfolios[0].id;
+  restoreActiveId();
   // Clear any spurious saves triggered during load
   syncPending = false;
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
