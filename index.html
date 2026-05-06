@@ -1216,6 +1216,8 @@ function loadAlloc() {
   portfolios.forEach(p => {
     if (!p.riskOnTargets) p.riskOnTargets = { ...DEFAULT_TARGETS };
     if (p.expenseTarget == null) p.expenseTarget = 0;
+    if (!p.riskOffMode) p.riskOffMode = 'dollar';
+    if (p.riskOffPct == null) p.riskOffPct = 0;
   });
 }
 function saveAlloc() {
@@ -1452,7 +1454,11 @@ function renderAllocModal() {
   // Risk-Off target from 7-year expense
   const selVal2 = document.getElementById('alloc-port-sel')?.value || '__all__';
   const singlePort = selVal2 !== '__all__' ? portfolios.find(p=>p.id===selVal) : null;
-  const riskOffTarget = singlePort?.expenseTarget > 0 ? singlePort.expenseTarget : null;
+  const riskOffTarget = singlePort
+    ? (singlePort.riskOffMode === 'pct' && singlePort.riskOffPct > 0
+        ? totalValue * singlePort.riskOffPct / 100
+        : singlePort.expenseTarget > 0 ? singlePort.expenseTarget : null)
+    : null;
   const riskOffGap    = riskOffTarget != null ? riskOffVal - riskOffTarget : null;
   const riskOffTargetPct = (riskOffTarget && totalValue > 0) ? riskOffTarget / totalValue * 100 : null;
 
@@ -1643,6 +1649,17 @@ function renderAllocModal() {
 /* ================================================================
    TARGETS EDITOR
 ================================================================ */
+function setRiskOffMode(mode) {
+  const isDollar = mode === 'dollar';
+  document.getElementById('tgt-dollar-row').style.display = isDollar ? 'flex' : 'none';
+  document.getElementById('tgt-pct-row').style.display   = isDollar ? 'none' : 'flex';
+  document.getElementById('tgt-mode-dollar').className = 'btn btn-sm' + (isDollar ? ' btn-primary' : ' btn-ghost');
+  document.getElementById('tgt-mode-pct').className    = 'btn btn-sm' + (!isDollar ? ' btn-primary' : ' btn-ghost');
+  document.getElementById('tgt-riskoff-hint').textContent = isDollar
+    ? '7-year net expense figure from Projection Lab, or any fixed dollar target.'
+    : 'Fixed % of total portfolio value. Recalculates automatically as portfolio grows.';
+  document.getElementById('modal-targets').dataset.riskOffMode = mode;
+}
 function openTargetsModal() {
   const selVal = document.getElementById('alloc-port-sel')?.value;
   const port = portfolios.find(p=>p.id===selVal);
@@ -1650,7 +1667,11 @@ function openTargetsModal() {
   document.getElementById('modal-targets-title').textContent = `Targets — ${port.name}`;
   document.getElementById('targets-port-name').textContent =
     `Set allocation targets for ${port.name}${port.owner?' ('+port.owner+')':''}`;
+  // Restore risk-off mode and values
+  const mode = port.riskOffMode || 'dollar';
+  setRiskOffMode(mode);
   document.getElementById('tgt-expense').value = port.expenseTarget || '';
+  document.getElementById('tgt-riskoff-pct').value = port.riskOffPct || '';
   // Render bucket rows
   const rows = document.getElementById('tgt-bucket-rows');
   const tgts = port.riskOnTargets || { ...DEFAULT_TARGETS };
@@ -1694,7 +1715,9 @@ function saveTargets() {
     err.style.display = 'block'; return;
   }
   err.style.display = 'none';
+  port.riskOffMode = document.getElementById('modal-targets').dataset.riskOffMode || 'dollar';
   port.expenseTarget = parseFloat(document.getElementById('tgt-expense').value) || 0;
+  port.riskOffPct = parseFloat(document.getElementById('tgt-riskoff-pct').value) || 0;
   port.riskOnTargets = {};
   BUCKETS.filter(b=>b.riskOn&&b.id!=='co_equity'&&b.id!=='other_risk_on').forEach(b => {
     port.riskOnTargets[b.id] = parseFloat(document.getElementById('tgt-'+b.id)?.value) || 0;
@@ -1734,7 +1757,9 @@ function computeNextDollarAnalysis(port) {
   const riskOnExCoEq = riskOnVal - coEquityVal;
 
   const tgts = port.riskOnTargets || { ...DEFAULT_TARGETS };
-  const expTarget = port.expenseTarget || 0;
+  const expTarget = port.riskOffMode === 'pct' && port.riskOffPct > 0
+    ? totalVal * port.riskOffPct / 100
+    : port.expenseTarget || 0;
 
   // Risk-Off check first
   const riskOffGap = expTarget > 0 ? expTarget - riskOffVal : null;
@@ -2794,13 +2819,20 @@ function renderOptionsModal(){
     <div id="targets-port-name" style="font-size:12px;color:var(--text2);margin-bottom:16px"></div>
 
     <div class="form-group">
-      <label class="form-label">7-year net expense target (from Projection Lab)</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="color:var(--text2)">$</span>
-        <input type="number" id="tgt-expense" min="0" step="1000" placeholder="e.g. 350000"
-               style="flex:1" />
+      <label class="form-label">Risk-Off target</label>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <button type="button" id="tgt-mode-dollar" class="btn btn-sm" onclick="setRiskOffMode('dollar')" style="flex:1">$ Amount</button>
+        <button type="button" id="tgt-mode-pct" class="btn btn-sm btn-ghost" onclick="setRiskOffMode('pct')" style="flex:1">% of Portfolio</button>
       </div>
-      <div class="form-hint">This drives your Risk-Off target — the total $ you need sheltered from market risk.</div>
+      <div id="tgt-dollar-row" style="display:flex;align-items:center;gap:8px">
+        <span style="color:var(--text2)">$</span>
+        <input type="number" id="tgt-expense" min="0" step="1000" placeholder="e.g. 350000" style="flex:1" />
+      </div>
+      <div id="tgt-pct-row" style="display:flex;align-items:center;gap:8px;display:none">
+        <input type="number" id="tgt-riskoff-pct" min="0" max="100" step="1" placeholder="e.g. 20" style="flex:1;text-align:right" />
+        <span style="color:var(--text2)">% of portfolio</span>
+      </div>
+      <div class="form-hint" id="tgt-riskoff-hint">7-year net expense figure from Projection Lab, or any fixed dollar target.</div>
     </div>
 
     <hr class="modal-divider" />
