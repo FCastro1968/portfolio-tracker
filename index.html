@@ -1131,8 +1131,8 @@ function acctLocation(accountType){ return ACCT_LOCATION[accountType] || 'taxabl
 const BUCKETS = [
   // Risk-On
   { id:'us_stocks',     label:'US Stocks',              riskOn:true,  color:'#f85149',
-    preferred:['taxable','roth'], secondary:['deferred','hsa'],
-    hardAvoid:[], softAvoid:['trad'],
+    preferred:['taxable','roth'], secondary:['deferred','hsa','trad'],
+    hardAvoid:[], softAvoid:[],
     locationNote:'Broad index funds ("Vs") → Taxable; Growth/income ("Qs", dividends) → Roth' },
   { id:'intl_dev',      label:'Intl Developed',         riskOn:true,  color:'#ff7b72',
     preferred:['taxable'], secondary:['roth'],
@@ -1156,7 +1156,7 @@ const BUCKETS = [
     locationNote:'RSUs/NSOs typically vest into taxable — no target allocation (floats with value)' },
   { id:'crypto',        label:'Crypto',                 riskOn:true,  color:'#79c0ff',
     preferred:['roth'], secondary:['taxable'],
-    hardAvoid:['trad'], softAvoid:['deferred'],
+    hardAvoid:[], softAvoid:['trad','deferred'],
     locationNote:'Extreme volatility — tax-free growth in Roth is ideal; Traditional IRA converts gains to ordinary income' },
   { id:'commodities',   label:'Commodities',            riskOn:true,  color:'#56d364',
     preferred:['taxable','deferred'], secondary:['roth','trad'],
