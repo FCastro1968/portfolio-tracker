@@ -182,9 +182,9 @@
     .toggle-opt { background:transparent; border:1px solid var(--border2); color:var(--text2); padding:4px 12px; border-radius:var(--radius); font-size:12px; font-family:var(--font); transition:all .15s; }
     .toggle-opt.active { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:500; }
     /* ---- Allocation ---- */
-    .alloc-modal { max-width:min(960px,calc(100vw - 32px)); width:calc(100vw - 32px); max-height:90vh; overflow-y:auto; }
+    .alloc-modal { max-width:min(1200px,calc(100vw - 32px)); width:calc(100vw - 32px); max-height:90vh; overflow-y:auto; }
     .risk-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
-    .risk-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px; }
+    .risk-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px; overflow:hidden; }
     .risk-card-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.07em; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
     .risk-on-title  { color:var(--red); }
     .risk-off-title { color:var(--accent); }
@@ -192,7 +192,7 @@
     .risk-bar-fill { height:100%; border-radius:4px; transition:width .4s; }
     .risk-on-fill  { background:var(--red); }
     .risk-off-fill { background:var(--accent); }
-    .bucket-row { display:grid; grid-template-columns:12px 1fr 100px 48px 52px 44px 90px; align-items:center; gap:6px; padding:5px 0; border-bottom:1px solid var(--border); }
+    .bucket-row { display:grid; grid-template-columns:12px 1fr 108px 50px 56px 44px 100px; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); }
     .bucket-row:last-child { border-bottom:none; }
     .bucket-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
     .bucket-name { font-size:12px; color:var(--text2); }
