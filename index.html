@@ -192,7 +192,7 @@
     .risk-bar-fill { height:100%; border-radius:4px; transition:width .4s; }
     .risk-on-fill  { background:var(--red); }
     .risk-off-fill { background:var(--accent); }
-    .bucket-row { display:grid; grid-template-columns:12px 1fr 100px 48px 52px 90px; align-items:center; gap:6px; padding:5px 0; border-bottom:1px solid var(--border); }
+    .bucket-row { display:grid; grid-template-columns:12px 1fr 100px 48px 52px 44px 90px; align-items:center; gap:6px; padding:5px 0; border-bottom:1px solid var(--border); }
     .bucket-row:last-child { border-bottom:none; }
     .bucket-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
     .bucket-name { font-size:12px; color:var(--text2); }
@@ -1540,6 +1540,7 @@ function renderAllocModal() {
         <span></span><span></span><span></span>
         <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">Port%</span>
         <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">${isOn?'RskOn%':'RskOff%'}</span>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">Tgt%</span>
         <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">vs Tgt</span>
       </div>`;
 
@@ -1573,12 +1574,21 @@ function renderAllocModal() {
       const portPct   = totalValue > 0 ? val / totalValue * 100 : 0;
       const groupPct  = sideVal > 0 ? val / sideVal * 100 : 0;
 
+      // Target % to display
+      let tgtDisplayPct = '';
+      if (isOn && targets && b.id !== 'co_equity' && b.id !== 'other_risk_on' && targets[b.id] != null) {
+        tgtDisplayPct = targets[b.id].toFixed(0) + '%';
+      } else if (b.id === 'co_equity' || b.id === 'other_risk_on') {
+        tgtDisplayPct = '—';
+      }
+
       out += `<div class="bucket-row" style="${val===0?'opacity:.4':''}">
         <span class="bucket-dot" style="background:${b.color}"></span>
         <span class="bucket-name">${b.label}</span>
         <span class="bucket-val">${val>0?fmt$(val):'—'}</span>
         <span class="bucket-pct"  title="% of total portfolio">${val>0?portPct.toFixed(1)+'%':'0.0%'}</span>
         <span class="bucket-gpct" title="% of ${isOn?'Risk-On':'Risk-Off'}">${val>0?groupPct.toFixed(1)+'%':'0.0%'}</span>
+        <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text3)">${tgtDisplayPct}</span>
         <span class="bucket-var">${tgtBadgeText}</span>
       </div>`;
     });
