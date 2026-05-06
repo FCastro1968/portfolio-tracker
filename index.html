@@ -492,7 +492,7 @@ function setActiveId(id) {
 function restoreActiveId() {
   const saved = localStorage.getItem(ACTIVE_KEY);
   if (saved && portfolios.some(p => p.id === saved)) activeId = saved;
-  else restoreActiveId();
+  else activeId = portfolios[0]?.id || null;
 }
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
 let portfolios=[],activeId=null,prices={},nameCache={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
