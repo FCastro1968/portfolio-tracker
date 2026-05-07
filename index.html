@@ -612,7 +612,18 @@ function calcGroup(g) {
     const shs = parseFloat(h.shares) || 0;
     const hv = holdingValue(h);
     if (hv != null) { val += hv; hasP = true; }
-    if (!h.manualPrice && !isOption(h) && prices[h.ticker]?.change != null) dayChg += prices[h.ticker].change * shs;
+    if (!h.manualPrice && prices[h.ticker]?.change != null) {
+      const chg = prices[h.ticker].change;
+      if (h.holdingType === 'rsu') {
+        dayChg += chg * shs; // RSU: full price change
+      } else if (h.holdingType === 'nso') {
+        const K = parseFloat(h.strikePrice)||0;
+        const S = prices[h.ticker]?.price||0;
+        if (S > K) dayChg += chg * shs; // NSO: only if ITM
+      } else {
+        dayChg += chg * shs;
+      }
+    }
     if (h.cost) { cost += parseFloat(h.cost) * shs; hasC = true; }
   });
   return { val, cost, dayChg, hasP, hasC, pl: hasC ? val-cost : null, plPct: (hasC&&cost>0) ? (val-cost)/cost*100 : null };
@@ -791,7 +802,20 @@ function renderView(){
         stocks.forEach(hd=>{
           const isManual=!!hd.manualPrice,shs=parseFloat(hd.shares)||0;
           const price=effPrice(hd),value=holdingValue(hd);
-          const dayChg=(!isManual&&prices[hd.ticker]?.change!=null)?prices[hd.ticker].change*shs:null;
+          const priceChg = prices[hd.ticker]?.change;
+          let dayChg = null;
+          if (!isManual && priceChg != null) {
+            if (hd.holdingType === 'rsu') {
+              dayChg = priceChg * shs;
+            } else if (hd.holdingType === 'nso') {
+              const K = parseFloat(hd.strikePrice)||0;
+              const S = prices[hd.ticker]?.price||0;
+              if (S > K) dayChg = priceChg * shs;
+              else dayChg = 0;
+            } else {
+              dayChg = priceChg * shs;
+            }
+          }
           const cb=hd.cost?parseFloat(hd.cost)*shs:null,pl=(value!=null&&cb!=null)?value-cb:null,plPct=(pl!=null&&cb>0)?pl/cb*100:null;
           // Location warning for this holding
           const splits=getHoldingAlloc(hd.id)||((hd.holdingType==='rsu'||hd.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
