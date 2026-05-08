@@ -624,7 +624,11 @@ function calcGroup(g) {
         dayChg += chg * shs;
       }
     }
-    if (h.cost) { cost += parseFloat(h.cost) * shs; hasC = true; }
+    if (h.holdingType === 'nso') {
+      if (hv != null) hasC = true; // P/L = intrinsic value, cost basis = $0
+    } else if (h.cost) {
+      cost += parseFloat(h.cost) * shs; hasC = true;
+    }
   });
   return { val, cost, dayChg, hasP, hasC, pl: hasC ? val-cost : null, plPct: (hasC&&cost>0) ? (val-cost)/cost*100 : null };
 }
