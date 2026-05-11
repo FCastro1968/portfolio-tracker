@@ -26,7 +26,6 @@
     .sync-err   { background:var(--red); }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     /* ---- Migration banner ---- */
-    .migrate-banner { background:rgba(88,166,255,0.1); border:1px solid rgba(88,166,255,0.3); border-radius:var(--radius); padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; }
     :root, [data-theme="dark"] {
       --bg:#0d1117; --surface:#161b22; --surface2:#1c2230;
       --border:rgba(255,255,255,0.08); --border2:rgba(255,255,255,0.14);
@@ -243,11 +242,6 @@
 </div>
 
 <div class="app-shell">
-  <div id="migrate-banner" style="display:none" class="migrate-banner">
-    <span>&#9888; Local data found from before you signed in.</span>
-    <button class="btn btn-sm btn-primary" onclick="migrateLocalData()">Import to cloud &#8594;</button>
-    <button class="btn btn-xs btn-ghost" onclick="dismissMigrateBanner()">Dismiss</button>
-  </div>
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-logo">Portfolio<span>.</span>Track</span>
@@ -320,7 +314,10 @@
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Export data</div><div class="settings-sub">Download all portfolios as JSON backup</div></div>
-      <button class="btn btn-sm btn-ghost" onclick="exportData()">&#8681; Export</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm btn-ghost" onclick="exportData()">&#8681; Export</button>
+        <label class="btn btn-sm btn-ghost" style="cursor:pointer">&#8679; Import<input type="file" accept=".json" style="display:none" onchange="importFromFile(this)" /></label>
+      </div>
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Clear all data</div><div class="settings-sub">Delete every portfolio permanently</div></div>
@@ -2400,7 +2397,7 @@ function bootApp() {
     if (apiKey) refreshPrices();
     startAutoRefresh();
     appReady = true;
-    setSyncStatus('ok', 'Local mode — use Export in Settings to migrate to cloud');
+    setSyncStatus('ok', 'Local mode — sign in to sync to cloud');
   } else {
     document.querySelector('.app-shell').style.visibility = 'hidden';
     document.getElementById('auth-screen').style.display = 'flex';
@@ -2557,22 +2554,6 @@ async function flushSave() {
 }
 
 /* ---- Migration: local → cloud ---- */
-function checkMigrateBanner() {
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  const banner = document.getElementById('migrate-banner');
-  if (!banner) return;
-  // Always show import option when logged in — user may have exported from local file
-  banner.style.display = 'flex';
-  banner.innerHTML = `
-    <span style="font-size:12px;color:var(--text)">&#9729; Import local portfolio data to cloud</span>
-    <div style="display:flex;gap:8px;flex-shrink:0">
-      <label class="btn btn-sm btn-primary" style="cursor:pointer">
-        &#8679; Import JSON
-        <input type="file" accept=".json" style="display:none" onchange="importFromFile(this)" />
-      </label>
-      <button class="btn btn-xs btn-ghost" onclick="dismissMigrateBanner()">Dismiss</button>
-    </div>`;
-}
 
 function exportData() {
   const payload = {
@@ -2614,18 +2595,13 @@ async function importFromFile(input) {
     restoreActiveId();
     save(); saveAlloc();
     await flushSave();
-    document.getElementById('migrate-banner').style.display = 'none';
+    closeModal('modal-settings');
     renderAll();
     if (apiKey) refreshPrices();
     alert(`Imported ${portfolios.length} portfolio${portfolios.length!==1?'s':''} with ${portfolios.reduce((n,p)=>n+p.groups.reduce((m,g)=>m+(g.holdings?.length||0),0),0)} holdings. All saved to cloud.`);
   } catch(e) {
     alert('Import failed: ' + e.message);
   }
-}
-
-function dismissMigrateBanner() {
-  document.getElementById('migrate-banner').style.display = 'none';
-  localStorage.setItem('migrateDismissed_'+sbUser?.id, '1');
 }
 
 /* ---- App show/hide ---- */
@@ -2660,7 +2636,6 @@ async function onSignedIn(user) {
   renderAll();
   if (apiKey) refreshPrices();
   startAutoRefresh();
-  checkMigrateBanner();
   appReady = true;
   setSyncStatus('ok', 'Synced ✓');
 }
