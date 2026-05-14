@@ -479,7 +479,7 @@
 
 
 <script>
-const STORAGE_KEY='portfolioTracker_v2',FINNHUB_KEY='portfolioTracker_finnhubKey',NAME_CACHE_KEY='portfolioTracker_nameCache',THEME_KEY='portfolioTracker_theme',ANTHROPIC_KEY='portfolioTracker_anthropicKey',ACTIVE_KEY='portfolioTracker_activeId';
+const STORAGE_KEY='portfolioTracker_v2',FINNHUB_KEY='portfolioTracker_finnhubKey',NAME_CACHE_KEY='portfolioTracker_nameCache',SECTOR_CACHE_KEY='portfolioTracker_sectorCache',THEME_KEY='portfolioTracker_theme',ANTHROPIC_KEY='portfolioTracker_anthropicKey',ACTIVE_KEY='portfolioTracker_activeId';
 
 function setActiveId(id) {
   activeId = id;
@@ -491,7 +491,7 @@ function restoreActiveId() {
   else activeId = portfolios[0]?.id || null;
 }
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
-let portfolios=[],activeId=null,prices={},nameCache={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
+let portfolios=[],activeId=null,prices={},nameCache={},sectorCache={},sectorWeights={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
 let collapsedGroups = new Set();   // set of group ids that are collapsed
 let groupSort = {};                // { [gid]: { field, dir } }  field: 'ticker'|'value'|'dayChg'|'pl'  dir: 'asc'|'desc'
 let dragSrcId = null;              // group id being dragged
@@ -509,8 +509,7 @@ function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
   if (appReady && sbUser && sb) scheduleSave();
 }
-function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}}
-function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
+function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}try{sectorCache=JSON.parse(localStorage.getItem(SECTOR_CACHE_KEY)||'{}');}catch(e){sectorCache={};}try{sectorWeights=JSON.parse(localStorage.getItem(SECTOR_WEIGHTS_KEY)||'{}');}catch(e){sectorWeights={};}}function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
 function applyTheme(t,persist=true){
   document.documentElement.setAttribute('data-theme',t);
   if(persist)localStorage.setItem(THEME_KEY,t);
@@ -639,7 +638,7 @@ async function fetchQuote(ticker){
 }
 async function fetchName(ticker){
   if(nameCache[ticker])return nameCache[ticker];
-  try{const r=await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${apiKey}`);const d=await r.json();const name=d.name||ticker;nameCache[ticker]=name;localStorage.setItem(NAME_CACHE_KEY,JSON.stringify(nameCache));return name;}catch(e){return ticker;}
+  try{const r=await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${apiKey}`);const d=await r.json();const name=d.name||ticker;nameCache[ticker]=name;if(d.finnhubIndustry){sectorCache[ticker]=d.finnhubIndustry;localStorage.setItem(SECTOR_CACHE_KEY,JSON.stringify(sectorCache));}localStorage.setItem(NAME_CACHE_KEY,JSON.stringify(nameCache));return name;}catch(e){return ticker;}
 }
 async function fetchPrices(tickers){
   if(!tickers.length)return{};if(!apiKey){renderSetupBanner();return{};}
@@ -1112,9 +1111,14 @@ function saveAnthropicKey(){
 /* ================================================================
    ALLOCATION TAXONOMY
 ================================================================ */
-const ALLOC_KEY    = 'portfolioTracker_alloc';
-const EXPENSE_KEY  = 'portfolioTracker_7yrExpense';  // legacy — now per-portfolio
-const BAND_KEY     = 'portfolioTracker_band';
+const ALLOC_KEY          = 'portfolioTracker_alloc';
+const EXPENSE_KEY        = 'portfolioTracker_7yrExpense';  // legacy — now per-portfolio
+const BAND_KEY           = 'portfolioTracker_band';
+const SECTOR_WEIGHTS_KEY = 'portfolioTracker_sectorWeights';
+
+const SECTORS = ['Technology','Healthcare','Financials','Consumer Discretionary',
+  'Consumer Staples','Industrials','Communication Services','Energy',
+  'Utilities','Real Estate','Materials','Other'];
 
 const DEFAULT_TARGETS = {
   us_stocks: 67, intl_dev: 12, emerging: 5,
@@ -1246,6 +1250,10 @@ function loadAlloc() {
 }
 function saveAlloc() {
   try { localStorage.setItem(ALLOC_KEY, JSON.stringify(allocations)); } catch(e) {}
+  if (appReady && sbUser && sb) scheduleSave();
+}
+function saveSectorWeights() {
+  try { localStorage.setItem(SECTOR_WEIGHTS_KEY, JSON.stringify(sectorWeights)); } catch(e) {}
   if (appReady && sbUser && sb) scheduleSave();
 }
 function saveBand(val) {
@@ -1442,6 +1450,7 @@ function renderAllocModal() {
   const bucketTotals = {}; // { bucketId: value }
   let unassignedValue = 0;
   const unassignedList = []; // [{ticker, group, value}]
+  const usStocksHoldings = []; // { ticker, val, fundContext } for sector breakdown
 
   ports.forEach(port => {
     (port.groups || []).forEach(g => {
@@ -1463,6 +1472,9 @@ function renderAllocModal() {
         } else {
           splits.forEach(s => {
             bucketTotals[s.bucket] = (bucketTotals[s.bucket] || 0) + val * (s.pct / 100);
+            if (s.bucket === 'us_stocks') {
+              usStocksHoldings.push({ ticker: h.ticker, val: val * (s.pct / 100), fundContext: h.fundContext });
+            }
           });
         }
       });
@@ -1621,6 +1633,45 @@ function renderAllocModal() {
         <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text3)">${tgtDisplayPct}</span>
         <span class="bucket-var">${tgtBadgeText}</span>
       </div>`;
+
+      // Sector breakdown under US Stocks
+      if (b.id === 'us_stocks' && usStocksHoldings.length > 0) {
+        const usTotal = bucketTotals['us_stocks'] || 0;
+        const sectorMap = {};
+        let unassignedVal = 0;
+        usStocksHoldings.forEach(({ ticker, val: hVal }) => {
+          const weights = sectorWeights[ticker];
+          if (!weights) { unassignedVal += hVal; return; }
+          SECTORS.forEach(s => {
+            const pct = weights[s] || 0;
+            if (pct > 0) sectorMap[s] = (sectorMap[s] || 0) + hVal * pct / 100;
+          });
+        });
+        const sectorRows = Object.entries(sectorMap).sort((a,b) => b[1]-a[1]);
+        sectorRows.forEach(([sector, sVal]) => {
+          const sPct = usTotal > 0 ? sVal/usTotal*100 : 0;
+          out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.85">
+            <span></span>
+            <span style="font-size:11px;color:var(--text3);padding-left:8px">${esc(sector)}</span>
+            <span class="bucket-val" style="font-size:11px">${fmt$(sVal)}</span>
+            <span class="bucket-pct" style="font-size:11px" title="% of US Stocks">${sPct.toFixed(1)}%</span>
+            <span></span><span></span><span></span>
+          </div>`;
+        });
+        if (unassignedVal > 0) {
+          const uPct = usTotal > 0 ? unassignedVal/usTotal*100 : 0;
+          out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.6">
+            <span></span>
+            <span style="font-size:11px;color:var(--text3);padding-left:8px;font-style:italic">Unassigned</span>
+            <span class="bucket-val" style="font-size:11px">${fmt$(unassignedVal)}</span>
+            <span class="bucket-pct" style="font-size:11px">${uPct.toFixed(1)}%</span>
+            <span></span><span></span><span></span>
+          </div>`;
+        }
+        out += `<div style="padding:4px 0 4px 20px">
+          <button class="btn btn-xs btn-ghost" onclick="openSectorWeightsModal()">&#9998; Sector weights</button>
+        </div>`;
+      }
     });
     out += `</div>`;
   });
@@ -1671,8 +1722,138 @@ function renderAllocModal() {
 }
 
 /* ================================================================
-   TARGETS EDITOR
+   SECTOR WEIGHTS EDITOR
 ================================================================ */
+function openSectorWeightsModal() {
+  // Gather unique tickers from US Stocks holdings across selected portfolios
+  const selVal = document.getElementById('alloc-port-sel')?.value || '__all__';
+  const ports = selVal === '__all__' ? portfolios : portfolios.filter(p => p.id === selVal);
+  const tickerSet = new Set();
+  ports.forEach(port => {
+    (port.groups || []).forEach(g => {
+      (g.holdings || []).forEach(h => {
+        const splits = getHoldingAlloc(h.id) ||
+          (isOption(h) ? [{bucket:'co_equity',pct:100}] : null);
+        if (!splits) return;
+        if (splits.some(s => s.bucket === 'us_stocks')) tickerSet.add(h.ticker);
+      });
+    });
+  });
+  const tickers = [...tickerSet].sort();
+  if (!tickers.length) { alert('No holdings assigned to US Stocks.'); return; }
+
+  const body = document.getElementById('sector-weights-body');
+  let html = '';
+  tickers.forEach(ticker => {
+    const w = sectorWeights[ticker] || {};
+    const total = SECTORS.reduce((s, sec) => s + (parseFloat(w[sec]) || 0), 0);
+    const ok = Math.abs(total - 100) < 0.01;
+    html += `<div style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span class="ticker">${esc(ticker)}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="sw-sum-${esc(ticker)}" style="font-size:11px;color:${ok?'var(--green)':'var(--red)'}">${ok?'✓ 100%':total.toFixed(0)+'% — must be 100%'}</span>
+        <button class="btn btn-xs btn-ghost" id="sw-ai-${esc(ticker)}" onclick="aiSuggestOneTicker('${esc(ticker)}')" title="AI suggest sectors">&#10024;</button>
+      </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px">`;
+    SECTORS.forEach(sec => {
+      const val = w[sec] != null ? w[sec] : '';
+      html += `<div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--text2);flex:1;min-width:0">${esc(sec)}</label>
+        <input type="number" min="0" max="100" step="1"
+          data-ticker="${esc(ticker)}" data-sector="${esc(sec)}"
+          value="${val}" placeholder="0"
+          oninput="updateSwSum('${esc(ticker)}')"
+          style="width:56px;padding:3px 6px;font-size:12px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text);text-align:right">
+        <span style="font-size:11px;color:var(--text3)">%</span>
+      </div>`;
+    });
+    html += `</div></div>`;
+  });
+  body.innerHTML = html;
+  openModal('modal-sector-weights');
+}
+
+function updateSwSum(ticker) {
+  const inputs = document.querySelectorAll(`input[data-ticker="${ticker}"]`);
+  const total = [...inputs].reduce((s, el) => s + (parseFloat(el.value) || 0), 0);
+  const ok = Math.abs(total - 100) < 0.01;
+  const el = document.getElementById(`sw-sum-${ticker}`);
+  if (el) { el.textContent = ok ? '✓ 100%' : total.toFixed(0) + '% — must be 100%'; el.style.color = ok ? 'var(--green)' : 'var(--red)'; }
+}
+
+function saveSectorWeightsModal() {
+  // Validate all tickers sum to 100%
+  const tickers = [...new Set([...document.querySelectorAll('input[data-ticker]')].map(el => el.dataset.ticker))];
+  for (const ticker of tickers) {
+    const inputs = document.querySelectorAll(`input[data-ticker="${ticker}"]`);
+    const total = [...inputs].reduce((s, el) => s + (parseFloat(el.value) || 0), 0);
+    if (total > 0 && Math.abs(total - 100) > 0.01) {
+      alert(`${ticker} sector weights sum to ${total.toFixed(1)}% — must be exactly 100% (or leave all blank to mark as unassigned).`);
+      return;
+    }
+  }
+  // Save weights
+  tickers.forEach(ticker => {
+    const inputs = document.querySelectorAll(`input[data-ticker="${ticker}"]`);
+    const total = [...inputs].reduce((s, el) => s + (parseFloat(el.value) || 0), 0);
+    if (total === 0) { delete sectorWeights[ticker]; return; }
+    const weights = {};
+    inputs.forEach(el => {
+      const v = parseFloat(el.value) || 0;
+      if (v > 0) weights[el.dataset.sector] = v;
+    });
+    sectorWeights[ticker] = weights;
+  });
+  saveSectorWeights();
+  closeModal('modal-sector-weights');
+  renderAllocModal();
+}
+
+async function aiSuggestOneTicker(ticker) {
+  if (!anthropicKey) { alert('No Anthropic API key set. Add it in Settings.'); return; }
+  const btn = document.getElementById(`sw-ai-${ticker}`);
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        system: 'You are a financial data assistant. Return ONLY valid JSON, no explanation, no markdown.',
+        messages: [{ role: 'user', content:
+          `Provide approximate sector weights for the ticker: ${ticker}\n\nSectors (use EXACTLY these names): ${SECTORS.join(', ')}\n\nRules:\n- Weights must sum to exactly 100 (whole numbers)\n- For ETFs use approximate current sector breakdown\n- For an individual stock assign 100% to its primary sector\n- For unrecognized tickers assign 100% to "Other"\n\nReturn JSON only: {"Sector": weight, ...}`
+        }]
+      })
+    });
+    if (!resp.ok) throw new Error(`API error ${resp.status}`);
+    const data = await resp.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '';
+    const weights = JSON.parse(text.replace(/```json|```/g, '').trim());
+    // Normalise to exactly 100 in case of rounding
+    const total = Object.values(weights).reduce((s, v) => s + (parseFloat(v)||0), 0);
+    const scale = total > 0 ? 100 / total : 1;
+    const inputs = document.querySelectorAll(`input[data-ticker="${ticker}"]`);
+    let runningTotal = 0; let lastInput = null;
+    inputs.forEach(el => {
+      const raw = (parseFloat(weights[el.dataset.sector]) || 0) * scale;
+      const rounded = Math.round(raw);
+      el.value = rounded > 0 ? rounded : '';
+      runningTotal += rounded;
+      if (rounded > 0) lastInput = el;
+    });
+    if (lastInput && runningTotal !== 100) lastInput.value = parseInt(lastInput.value||0) + (100 - runningTotal);
+    updateSwSum(ticker);
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '✨'; btn.disabled = false; }, 2000);
+  } catch(e) {
+    console.error('AI sector suggest error:', e);
+    alert('AI suggestion failed: ' + e.message);
+    btn.textContent = '✨'; btn.disabled = false;
+  }
+}
 function setRiskOffMode(mode) {
   const isDollar = mode === 'dollar';
   document.getElementById('tgt-dollar-row').style.display = isDollar ? 'flex' : 'none';
@@ -2501,6 +2682,7 @@ async function loadFromSupabase() {
         });
       }
       if (data.allocations && Object.keys(data.allocations).length) allocations = data.allocations;
+      if (data.sectorWeights && Object.keys(data.sectorWeights).length) { sectorWeights = data.sectorWeights; try { localStorage.setItem(SECTOR_WEIGHTS_KEY, JSON.stringify(sectorWeights)); } catch(e) {} }
       if (data.settings) {
         const s = data.settings;
         if (s.theme) applyTheme(s.theme, true);
@@ -2537,7 +2719,7 @@ async function flushSave() {
     band: toleranceBand,
     rfr: riskFreeRate
   };
-  const payload = { user_id: sbUser.id, portfolios, allocations, settings };
+  const payload = { user_id: sbUser.id, portfolios, allocations, sectorWeights, settings };
   try {
     const result = await Promise.race([
       sb.from('user_data').upsert(payload, { onConflict: 'user_id' }),
@@ -2559,6 +2741,7 @@ function exportData() {
   const payload = {
     portfolios: JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'),
     allocations: JSON.parse(localStorage.getItem(ALLOC_KEY) || '{}'),
+    sectorWeights: JSON.parse(localStorage.getItem(SECTOR_WEIGHTS_KEY) || '{}'),
     settings: {
       theme: localStorage.getItem(THEME_KEY) || 'dark',
       band: parseFloat(localStorage.getItem(BAND_KEY)) || 20,
@@ -2589,11 +2772,12 @@ async function importFromFile(input) {
       if (p.expenseTarget==null) p.expenseTarget = 0;
     });
     if (data.allocations) allocations = data.allocations;
+    if (data.sectorWeights) sectorWeights = data.sectorWeights;
     if (data.settings?.band) toleranceBand = data.settings.band;
     if (data.settings?.rfr) riskFreeRate = data.settings.rfr;
     if (data.settings?.theme) applyTheme(data.settings.theme);
     restoreActiveId();
-    save(); saveAlloc();
+    save(); saveAlloc(); saveSectorWeights();
     await flushSave();
     closeModal('modal-settings');
     renderAll();
@@ -2910,6 +3094,19 @@ function renderOptionsModal(){
       </div>
     </div>
     <div id="options-modal-body"></div>
+  </div>
+</div>
+
+<!-- Sector Weights Modal -->
+<div class="overlay" id="modal-sector-weights">
+  <div class="modal" style="max-width:520px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">&#9998; Sector Weights</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Enter sector allocation per ticker. Must sum to 100%. Use ✨ to auto-fill via AI.</div>
+    <div id="sector-weights-body"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-sector-weights')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSectorWeightsModal()">Save</button>
+    </div>
   </div>
 </div>
 
