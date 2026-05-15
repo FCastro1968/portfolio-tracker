@@ -1636,41 +1636,57 @@ function renderAllocModal() {
 
       // Sector breakdown under US Stocks
       if (b.id === 'us_stocks' && usStocksHoldings.length > 0) {
-        const usTotal = bucketTotals['us_stocks'] || 0;
-        const sectorMap = {};
-        let unassignedVal = 0;
-        usStocksHoldings.forEach(({ ticker, val: hVal }) => {
-          const weights = sectorWeights[ticker];
-          if (!weights) { unassignedVal += hVal; return; }
-          SECTORS.forEach(s => {
-            const pct = weights[s] || 0;
-            if (pct > 0) sectorMap[s] = (sectorMap[s] || 0) + hVal * pct / 100;
+        const sectorOpen = localStorage.getItem('pf_sector_open') === '1';
+        const chevron = sectorOpen ? '&#9650;' : '&#9660;';
+        // Re-render the US Stocks row with a toggle chevron in the name
+        out = out.slice(0, out.lastIndexOf('<div class="bucket-row"'));
+        out += `<div class="bucket-row" style="${val===0?'opacity:.4':''}">
+          <span class="bucket-dot" style="background:${b.color}"></span>
+          <span class="bucket-name" style="cursor:pointer;user-select:none" onclick="toggleSectorBreakdown()">${b.label} <span style="font-size:9px;opacity:.6">${chevron}</span></span>
+          <span class="bucket-val">${val>0?fmt$(val):'—'}</span>
+          <span class="bucket-pct"  title="% of total portfolio">${val>0?portPct.toFixed(1)+'%':'0.0%'}</span>
+          <span class="bucket-gpct" title="% of ${isOn?'Risk-On':'Risk-Off'}">${val>0?groupPct.toFixed(1)+'%':'0.0%'}</span>
+          <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text3)">${tgtDisplayPct}</span>
+          <span class="bucket-var">${tgtBadgeText}</span>
+        </div>`;
+
+        if (sectorOpen) {
+          const usTotal = bucketTotals['us_stocks'] || 0;
+          const sectorMap = {};
+          let unassignedVal = 0;
+          usStocksHoldings.forEach(({ ticker, val: hVal }) => {
+            const weights = sectorWeights[ticker];
+            if (!weights) { unassignedVal += hVal; return; }
+            SECTORS.forEach(s => {
+              const pct = weights[s] || 0;
+              if (pct > 0) sectorMap[s] = (sectorMap[s] || 0) + hVal * pct / 100;
+            });
           });
-        });
-        const sectorRows = Object.entries(sectorMap).sort((a,b) => b[1]-a[1]);
-        sectorRows.forEach(([sector, sVal]) => {
-          const sPct = usTotal > 0 ? sVal/usTotal*100 : 0;
-          out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.85">
-            <span></span>
-            <span style="font-size:11px;color:var(--text3);padding-left:8px">${esc(sector)}</span>
-            <span class="bucket-val" style="font-size:11px">${fmt$(sVal)}</span>
-            <span class="bucket-pct" style="font-size:11px" title="% of US Stocks">${sPct.toFixed(1)}%</span>
-            <span></span><span></span><span></span>
-          </div>`;
-        });
-        if (unassignedVal > 0) {
-          const uPct = usTotal > 0 ? unassignedVal/usTotal*100 : 0;
-          out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.6">
-            <span></span>
-            <span style="font-size:11px;color:var(--text3);padding-left:8px;font-style:italic">Unassigned</span>
-            <span class="bucket-val" style="font-size:11px">${fmt$(unassignedVal)}</span>
-            <span class="bucket-pct" style="font-size:11px">${uPct.toFixed(1)}%</span>
-            <span></span><span></span><span></span>
+          const sectorRows = Object.entries(sectorMap).sort((a,b) => b[1]-a[1]);
+          sectorRows.forEach(([sector, sVal]) => {
+            const sPct = usTotal > 0 ? sVal/usTotal*100 : 0;
+            out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.85">
+              <span></span>
+              <span style="font-size:11px;color:var(--text3);padding-left:8px">${esc(sector)}</span>
+              <span class="bucket-val" style="font-size:11px">${fmt$(sVal)}</span>
+              <span class="bucket-pct" style="font-size:11px" title="% of US Stocks">${sPct.toFixed(1)}%</span>
+              <span></span><span></span><span></span>
+            </div>`;
+          });
+          if (unassignedVal > 0) {
+            const uPct = usTotal > 0 ? unassignedVal/usTotal*100 : 0;
+            out += `<div class="bucket-row" style="padding:3px 0;border-bottom:1px dotted var(--border);opacity:.6">
+              <span></span>
+              <span style="font-size:11px;color:var(--text3);padding-left:8px;font-style:italic">Unassigned</span>
+              <span class="bucket-val" style="font-size:11px">${fmt$(unassignedVal)}</span>
+              <span class="bucket-pct" style="font-size:11px">${uPct.toFixed(1)}%</span>
+              <span></span><span></span><span></span>
+            </div>`;
+          }
+          out += `<div style="padding:4px 0 4px 20px">
+            <button class="btn btn-xs btn-ghost" onclick="openSectorWeightsModal()">&#9998; Sector weights</button>
           </div>`;
         }
-        out += `<div style="padding:4px 0 4px 20px">
-          <button class="btn btn-xs btn-ghost" onclick="openSectorWeightsModal()">&#9998; Sector weights</button>
-        </div>`;
       }
     });
     out += `</div>`;
@@ -1719,6 +1735,12 @@ function renderAllocModal() {
   }
 
   body.innerHTML = out;
+}
+
+function toggleSectorBreakdown() {
+  const open = localStorage.getItem('pf_sector_open') === '1';
+  localStorage.setItem('pf_sector_open', open ? '0' : '1');
+  renderAllocModal();
 }
 
 /* ================================================================
