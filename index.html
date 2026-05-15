@@ -196,7 +196,7 @@
     .bucket-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
     .bucket-name { font-size:12px; color:var(--text2); }
     .bucket-val  { font-size:12px; font-family:var(--mono); color:var(--text); font-variant-numeric:tabular-nums; text-align:right; }
-    .bucket-pct  { font-size:11px; color:var(--text3); text-align:right; font-family:var(--mono); }
+    .bucket-pct  { font-size:11px; color:var(--text2); text-align:right; font-family:var(--mono); }
     .bucket-gpct { font-size:11px; color:var(--text2); text-align:right; font-family:var(--mono); }
     .bucket-var  { font-size:10px; font-family:var(--mono); text-align:right; white-space:nowrap; }
     .unassigned-warn { background:var(--red-bg); border:1px solid rgba(248,81,73,0.25); border-radius:var(--radius); padding:10px 14px; font-size:12px; color:var(--red); margin-bottom:14px; }
@@ -1578,12 +1578,12 @@ function renderAllocModal() {
       .sort((a,b) => (bucketTotals[b.id]||0) - (bucketTotals[a.id]||0));
     out += `<div class="risk-card">
       <div class="risk-card-title ${isOn?'risk-on-title':'risk-off-title'}">${isOn?'▲ Risk-On':'▼ Risk-Off'}</div>
-      <div class="bucket-row" style="opacity:.5;border-bottom:1px solid var(--border2);padding-bottom:4px;margin-bottom:2px">
+      <div class="bucket-row" style="border-bottom:1px solid var(--border2);padding-bottom:4px;margin-bottom:2px">
         <span></span><span></span><span></span>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">Port%</span>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">${isOn?'RskOn%':'RskOff%'}</span>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">Tgt%</span>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text3)">vs Tgt</span>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text2)">Port%</span>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text2)">${isOn?'RskOn%':'RskOff%'}</span>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text2)">Tgt%</span>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;text-align:right;color:var(--text2)">vs Tgt</span>
       </div>`;
 
     buckets.forEach(b => {
@@ -1608,7 +1608,7 @@ function renderAllocModal() {
         tgtBadge = tgtBadgeText;
       }
       if ((b.id === 'co_equity' || b.id === 'other_risk_on') && isOn) {
-        tgtBadgeText = `<span style="color:var(--text3)">floats</span>`;
+        tgtBadgeText = `<span style="color:var(--text2)">floats</span>`;
         tgtBadge = tgtBadgeText;
       }
 
@@ -1630,7 +1630,7 @@ function renderAllocModal() {
         <span class="bucket-val">${val>0?fmt$(val):'—'}</span>
         <span class="bucket-pct"  title="% of total portfolio">${val>0?portPct.toFixed(1)+'%':'0.0%'}</span>
         <span class="bucket-gpct" title="% of ${isOn?'Risk-On':'Risk-Off'}">${val>0?groupPct.toFixed(1)+'%':'0.0%'}</span>
-        <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text3)">${tgtDisplayPct}</span>
+        <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text2)">${tgtDisplayPct}</span>
         <span class="bucket-var">${tgtBadgeText}</span>
       </div>`;
 
@@ -1646,7 +1646,7 @@ function renderAllocModal() {
           <span class="bucket-val">${val>0?fmt$(val):'—'}</span>
           <span class="bucket-pct"  title="% of total portfolio">${val>0?portPct.toFixed(1)+'%':'0.0%'}</span>
           <span class="bucket-gpct" title="% of ${isOn?'Risk-On':'Risk-Off'}">${val>0?groupPct.toFixed(1)+'%':'0.0%'}</span>
-          <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text3)">${tgtDisplayPct}</span>
+          <span class="bucket-pct"  title="Target % of Risk-On" style="color:var(--text2)">${tgtDisplayPct}</span>
           <span class="bucket-var">${tgtBadgeText}</span>
         </div>`;
 
