@@ -1464,7 +1464,8 @@ function renderAllocModal() {
         const val = holdingValue(h);
         if (val == null || val === 0) return;
         totalValue += val;
-        const er = expenseRatios[h.ticker];
+        const erk = h.fundContext ? h.ticker + '|' + h.fundContext : h.ticker;
+        const er = expenseRatios[erk];
         if (er != null) { erWeightedSum += val * er; erCoveredVal += val; }
 
         // Get allocation for this holding
@@ -1905,32 +1906,34 @@ async function aiSuggestOneTicker(ticker) {
    EXPENSE RATIO EDITOR
 ================================================================ */
 function openERModal() {
-  // Gather all unique tickers across selected portfolios
   const selVal = document.getElementById('alloc-port-sel')?.value || '__all__';
   const ports = selVal === '__all__' ? portfolios : portfolios.filter(p => p.id === selVal);
-  const tickerMap = {}; // ticker -> { name }
+  const tickerMap = {}; // erKey -> { ticker, name, fundContext }
   ports.forEach(port => {
     (port.groups || []).forEach(g => {
       (g.holdings || []).forEach(h => {
-        if (!tickerMap[h.ticker]) tickerMap[h.ticker] = { name: nameCache[h.ticker] || h.ticker };
+        const erk = h.fundContext ? h.ticker + '|' + h.fundContext : h.ticker;
+        if (!tickerMap[erk]) tickerMap[erk] = { ticker: h.ticker, name: nameCache[h.ticker] || h.ticker, fundContext: h.fundContext || null };
       });
     });
   });
-  const tickers = Object.keys(tickerMap).sort();
-  if (!tickers.length) { alert('No holdings found.'); return; }
+  const keys = Object.keys(tickerMap).sort();
+  if (!keys.length) { alert('No holdings found.'); return; }
 
   const body = document.getElementById('er-modal-body');
   let html = `<div style="display:grid;grid-template-columns:70px 1fr 80px;gap:6px 12px;align-items:center">
     <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase">Ticker</span>
     <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase">Name</span>
     <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase;text-align:right">ER %</span>`;
-  tickers.forEach(ticker => {
-    const val = expenseRatios[ticker] != null ? expenseRatios[ticker] : '';
+  keys.forEach(erk => {
+    const info = tickerMap[erk];
+    const val = expenseRatios[erk] != null ? expenseRatios[erk] : '';
+    const displayName = info.fundContext || info.name;
     html += `
-    <span class="ticker" style="font-size:12px">${esc(ticker)}</span>
-    <span style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(tickerMap[ticker].name)}</span>
+    <span class="ticker" style="font-size:12px">${esc(info.ticker)}</span>
+    <span style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(displayName)}">${esc(displayName)}</span>
     <input type="number" min="0" max="10" step="0.01"
-      data-er-ticker="${esc(ticker)}" value="${val}" placeholder="0.00"
+      data-er-key="${esc(erk)}" value="${val}" placeholder="0.00"
       style="width:72px;padding:4px 6px;font-size:12px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text);text-align:right;margin-left:auto">`;
   });
   html += `</div>`;
@@ -1939,13 +1942,13 @@ function openERModal() {
 }
 
 function saveERModal() {
-  const inputs = document.querySelectorAll('input[data-er-ticker]');
+  const inputs = document.querySelectorAll('input[data-er-key]');
   inputs.forEach(el => {
     const v = parseFloat(el.value);
     if (v != null && !isNaN(v) && v >= 0) {
-      expenseRatios[el.dataset.erTicker] = v;
+      expenseRatios[el.dataset.erKey] = v;
     } else {
-      delete expenseRatios[el.dataset.erTicker];
+      delete expenseRatios[el.dataset.erKey];
     }
   });
   saveExpenseRatios();
@@ -1955,9 +1958,15 @@ function saveERModal() {
 
 async function aiSuggestAllERs() {
   if (!anthropicKey) { alert('No Anthropic API key set. Add it in Settings.'); return; }
-  const inputs = document.querySelectorAll('input[data-er-ticker]');
-  const tickers = [...inputs].map(el => el.dataset.erTicker);
-  if (!tickers.length) return;
+  const inputs = document.querySelectorAll('input[data-er-key]');
+  if (!inputs.length) return;
+  // Build ticker list with actual fund names for proxies
+  const tickerDescs = [...inputs].map(el => {
+    const erk = el.dataset.erKey;
+    const pipeIdx = erk.indexOf('|');
+    if (pipeIdx > -1) return `${erk.substring(0, pipeIdx)} (actual fund: ${erk.substring(pipeIdx + 1)})`;
+    return erk;
+  });
   const btn = document.getElementById('btn-ai-er');
   btn.disabled = true; btn.textContent = '⏳ Thinking…';
   try {
@@ -1969,7 +1978,7 @@ async function aiSuggestAllERs() {
         max_tokens: 500,
         system: 'You are a financial data assistant. Return ONLY valid JSON, no explanation, no markdown.',
         messages: [{ role: 'user', content:
-          `Provide the annual expense ratio (as a percentage, e.g. 0.03 for 0.03%) for each ticker below.\n\nTickers: ${tickers.join(', ')}\n\nRules:\n- Individual stocks have expense ratio 0\n- ETFs and mutual funds have their published expense ratio\n- Use the most recent known expense ratio\n- If unknown, use 0\n\nReturn JSON only: {"TICKER": number, ...}`
+          `Provide the annual expense ratio (as a percentage, e.g. 0.03 for 0.03%) for each holding below.\n\nHoldings:\n${tickerDescs.join('\n')}\n\nRules:\n- Individual stocks have expense ratio 0\n- ETFs and mutual funds have their published expense ratio\n- When "actual fund" is noted, use that fund's ER, NOT the proxy ticker's ER\n- Use the most recent known expense ratio\n- If unknown, use 0\n\nReturn JSON with keys matching EXACTLY: ${[...inputs].map(el => '"'+el.dataset.erKey+'"').join(', ')}\nFormat: {"key": number, ...}`
         }]
       })
     });
@@ -1979,7 +1988,7 @@ async function aiSuggestAllERs() {
     const suggested = JSON.parse(text.replace(/```json|```/g, '').trim());
     let filled = 0;
     inputs.forEach(el => {
-      const v = suggested[el.dataset.erTicker];
+      const v = suggested[el.dataset.erKey];
       if (v != null && !isNaN(v)) { el.value = v; filled++; }
     });
     btn.textContent = `✓ Filled ${filled}`;
