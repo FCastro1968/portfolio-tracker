@@ -491,7 +491,7 @@ function restoreActiveId() {
   else activeId = portfolios[0]?.id || null;
 }
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
-let portfolios=[],activeId=null,prices={},nameCache={},sectorCache={},sectorWeights={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
+let portfolios=[],activeId=null,prices={},nameCache={},sectorCache={},sectorWeights={},expenseRatios={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
 let collapsedGroups = new Set();   // set of group ids that are collapsed
 let groupSort = {};                // { [gid]: { field, dir } }  field: 'ticker'|'value'|'dayChg'|'pl'  dir: 'asc'|'desc'
 let dragSrcId = null;              // group id being dragged
@@ -509,7 +509,7 @@ function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(portfolios)); } catch(e) {}
   if (appReady && sbUser && sb) scheduleSave();
 }
-function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}try{sectorCache=JSON.parse(localStorage.getItem(SECTOR_CACHE_KEY)||'{}');}catch(e){sectorCache={};}try{sectorWeights=JSON.parse(localStorage.getItem(SECTOR_WEIGHTS_KEY)||'{}');}catch(e){sectorWeights={};}}function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
+function loadApiKey(){apiKey=localStorage.getItem(FINNHUB_KEY)||'';anthropicKey=localStorage.getItem(ANTHROPIC_KEY)||'';try{nameCache=JSON.parse(localStorage.getItem(NAME_CACHE_KEY)||'{}');}catch(e){nameCache={};}try{sectorCache=JSON.parse(localStorage.getItem(SECTOR_CACHE_KEY)||'{}');}catch(e){sectorCache={};}try{sectorWeights=JSON.parse(localStorage.getItem(SECTOR_WEIGHTS_KEY)||'{}');}catch(e){sectorWeights={};}try{expenseRatios=JSON.parse(localStorage.getItem(ER_KEY)||'{}');}catch(e){expenseRatios={};}}function loadTheme(){applyTheme(localStorage.getItem(THEME_KEY)||'dark',false);}
 function applyTheme(t,persist=true){
   document.documentElement.setAttribute('data-theme',t);
   if(persist)localStorage.setItem(THEME_KEY,t);
@@ -1115,6 +1115,7 @@ const ALLOC_KEY          = 'portfolioTracker_alloc';
 const EXPENSE_KEY        = 'portfolioTracker_7yrExpense';  // legacy — now per-portfolio
 const BAND_KEY           = 'portfolioTracker_band';
 const SECTOR_WEIGHTS_KEY = 'portfolioTracker_sectorWeights';
+const ER_KEY             = 'portfolioTracker_expenseRatios';
 
 const SECTORS = ['Technology','Healthcare','Financials','Consumer Discretionary',
   'Consumer Staples','Industrials','Communication Services','Energy',
@@ -1254,6 +1255,10 @@ function saveAlloc() {
 }
 function saveSectorWeights() {
   try { localStorage.setItem(SECTOR_WEIGHTS_KEY, JSON.stringify(sectorWeights)); } catch(e) {}
+  if (appReady && sbUser && sb) scheduleSave();
+}
+function saveExpenseRatios() {
+  try { localStorage.setItem(ER_KEY, JSON.stringify(expenseRatios)); } catch(e) {}
   if (appReady && sbUser && sb) scheduleSave();
 }
 function saveBand(val) {
@@ -1451,6 +1456,7 @@ function renderAllocModal() {
   let unassignedValue = 0;
   const unassignedList = []; // [{ticker, group, value}]
   const usStocksHoldings = []; // { ticker, val, fundContext } for sector breakdown
+  let erWeightedSum = 0, erCoveredVal = 0; // for weighted expense ratio
 
   ports.forEach(port => {
     (port.groups || []).forEach(g => {
@@ -1458,6 +1464,8 @@ function renderAllocModal() {
         const val = holdingValue(h);
         if (val == null || val === 0) return;
         totalValue += val;
+        const er = expenseRatios[h.ticker];
+        if (er != null) { erWeightedSum += val * er; erCoveredVal += val; }
 
         // Get allocation for this holding
         let splits = getHoldingAlloc(h.id);
@@ -1568,6 +1576,22 @@ function renderAllocModal() {
 
   // Bucket breakdown two columns
   const targets = singlePort?.riskOnTargets || null;
+
+  // Weighted expense ratio
+  const weightedER = totalValue > 0 ? erWeightedSum / totalValue : null;
+  const erCoveredPct = totalValue > 0 ? erCoveredVal / totalValue * 100 : 0;
+  if (weightedER != null) {
+    out += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:var(--radius);font-size:12px">
+      <span style="color:var(--text2)">Weighted Expense Ratio:</span>
+      <span style="font-weight:600;color:var(--text);font-family:var(--mono)">${weightedER.toFixed(2)}%</span>
+      ${erCoveredPct < 99.9 ? `<span style="color:var(--text3);font-size:11px">(${erCoveredPct.toFixed(0)}% of holdings covered)</span>` : ''}
+      <button class="btn btn-xs btn-ghost" onclick="openERModal()" style="margin-left:auto">&#9998; Edit</button>
+    </div>`;
+  } else {
+    out += `<div style="margin-bottom:12px;font-size:12px;color:var(--text3)">
+      <button class="btn btn-xs btn-ghost" onclick="openERModal()">&#9998; Set expense ratios</button>
+    </div>`;
+  }
   // Compute Risk-On ex-Company-Equity total for target %→$ conversion
   const riskOnExCoEquity = riskOnVal - (bucketTotals['co_equity']||0);
 
@@ -1876,6 +1900,97 @@ async function aiSuggestOneTicker(ticker) {
     btn.textContent = '✨'; btn.disabled = false;
   }
 }
+
+/* ================================================================
+   EXPENSE RATIO EDITOR
+================================================================ */
+function openERModal() {
+  // Gather all unique tickers across selected portfolios
+  const selVal = document.getElementById('alloc-port-sel')?.value || '__all__';
+  const ports = selVal === '__all__' ? portfolios : portfolios.filter(p => p.id === selVal);
+  const tickerMap = {}; // ticker -> { name }
+  ports.forEach(port => {
+    (port.groups || []).forEach(g => {
+      (g.holdings || []).forEach(h => {
+        if (!tickerMap[h.ticker]) tickerMap[h.ticker] = { name: nameCache[h.ticker] || h.ticker };
+      });
+    });
+  });
+  const tickers = Object.keys(tickerMap).sort();
+  if (!tickers.length) { alert('No holdings found.'); return; }
+
+  const body = document.getElementById('er-modal-body');
+  let html = `<div style="display:grid;grid-template-columns:70px 1fr 80px;gap:6px 12px;align-items:center">
+    <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase">Ticker</span>
+    <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase">Name</span>
+    <span style="font-size:10px;font-weight:600;color:var(--text2);text-transform:uppercase;text-align:right">ER %</span>`;
+  tickers.forEach(ticker => {
+    const val = expenseRatios[ticker] != null ? expenseRatios[ticker] : '';
+    html += `
+    <span class="ticker" style="font-size:12px">${esc(ticker)}</span>
+    <span style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(tickerMap[ticker].name)}</span>
+    <input type="number" min="0" max="10" step="0.01"
+      data-er-ticker="${esc(ticker)}" value="${val}" placeholder="0.00"
+      style="width:72px;padding:4px 6px;font-size:12px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text);text-align:right;margin-left:auto">`;
+  });
+  html += `</div>`;
+  body.innerHTML = html;
+  openModal('modal-expense-ratios');
+}
+
+function saveERModal() {
+  const inputs = document.querySelectorAll('input[data-er-ticker]');
+  inputs.forEach(el => {
+    const v = parseFloat(el.value);
+    if (v != null && !isNaN(v) && v >= 0) {
+      expenseRatios[el.dataset.erTicker] = v;
+    } else {
+      delete expenseRatios[el.dataset.erTicker];
+    }
+  });
+  saveExpenseRatios();
+  closeModal('modal-expense-ratios');
+  renderAllocModal();
+}
+
+async function aiSuggestAllERs() {
+  if (!anthropicKey) { alert('No Anthropic API key set. Add it in Settings.'); return; }
+  const inputs = document.querySelectorAll('input[data-er-ticker]');
+  const tickers = [...inputs].map(el => el.dataset.erTicker);
+  if (!tickers.length) return;
+  const btn = document.getElementById('btn-ai-er');
+  btn.disabled = true; btn.textContent = '⏳ Thinking…';
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: 'You are a financial data assistant. Return ONLY valid JSON, no explanation, no markdown.',
+        messages: [{ role: 'user', content:
+          `Provide the annual expense ratio (as a percentage, e.g. 0.03 for 0.03%) for each ticker below.\n\nTickers: ${tickers.join(', ')}\n\nRules:\n- Individual stocks have expense ratio 0\n- ETFs and mutual funds have their published expense ratio\n- Use the most recent known expense ratio\n- If unknown, use 0\n\nReturn JSON only: {"TICKER": number, ...}`
+        }]
+      })
+    });
+    if (!resp.ok) throw new Error(`API error ${resp.status}`);
+    const data = await resp.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '';
+    const suggested = JSON.parse(text.replace(/```json|```/g, '').trim());
+    let filled = 0;
+    inputs.forEach(el => {
+      const v = suggested[el.dataset.erTicker];
+      if (v != null && !isNaN(v)) { el.value = v; filled++; }
+    });
+    btn.textContent = `✓ Filled ${filled}`;
+    setTimeout(() => { btn.textContent = '✨ AI Suggest All'; btn.disabled = false; }, 2500);
+  } catch(e) {
+    console.error('AI ER suggest error:', e);
+    alert('AI suggestion failed: ' + e.message);
+    btn.textContent = '✨ AI Suggest All'; btn.disabled = false;
+  }
+}
+
 function setRiskOffMode(mode) {
   const isDollar = mode === 'dollar';
   document.getElementById('tgt-dollar-row').style.display = isDollar ? 'flex' : 'none';
@@ -2705,6 +2820,7 @@ async function loadFromSupabase() {
       }
       if (data.allocations && Object.keys(data.allocations).length) allocations = data.allocations;
       if (data.sectorWeights && Object.keys(data.sectorWeights).length) { sectorWeights = data.sectorWeights; try { localStorage.setItem(SECTOR_WEIGHTS_KEY, JSON.stringify(sectorWeights)); } catch(e) {} }
+      if (data.expenseRatios && Object.keys(data.expenseRatios).length) { expenseRatios = data.expenseRatios; try { localStorage.setItem(ER_KEY, JSON.stringify(expenseRatios)); } catch(e) {} }
       if (data.settings) {
         const s = data.settings;
         if (s.theme) applyTheme(s.theme, true);
@@ -2741,7 +2857,7 @@ async function flushSave() {
     band: toleranceBand,
     rfr: riskFreeRate
   };
-  const payload = { user_id: sbUser.id, portfolios, allocations, sectorWeights, settings };
+  const payload = { user_id: sbUser.id, portfolios, allocations, sectorWeights, expenseRatios, settings };
   try {
     const result = await Promise.race([
       sb.from('user_data').upsert(payload, { onConflict: 'user_id' }),
@@ -2764,6 +2880,7 @@ function exportData() {
     portfolios: JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'),
     allocations: JSON.parse(localStorage.getItem(ALLOC_KEY) || '{}'),
     sectorWeights: JSON.parse(localStorage.getItem(SECTOR_WEIGHTS_KEY) || '{}'),
+    expenseRatios: JSON.parse(localStorage.getItem(ER_KEY) || '{}'),
     settings: {
       theme: localStorage.getItem(THEME_KEY) || 'dark',
       band: parseFloat(localStorage.getItem(BAND_KEY)) || 20,
@@ -2795,11 +2912,12 @@ async function importFromFile(input) {
     });
     if (data.allocations) allocations = data.allocations;
     if (data.sectorWeights) sectorWeights = data.sectorWeights;
+    if (data.expenseRatios) expenseRatios = data.expenseRatios;
     if (data.settings?.band) toleranceBand = data.settings.band;
     if (data.settings?.rfr) riskFreeRate = data.settings.rfr;
     if (data.settings?.theme) applyTheme(data.settings.theme);
     restoreActiveId();
-    save(); saveAlloc(); saveSectorWeights();
+    save(); saveAlloc(); saveSectorWeights(); saveExpenseRatios();
     await flushSave();
     closeModal('modal-settings');
     renderAll();
@@ -3128,6 +3246,22 @@ function renderOptionsModal(){
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('modal-sector-weights')">Cancel</button>
       <button class="btn btn-primary" onclick="saveSectorWeightsModal()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Expense Ratio Modal -->
+<div class="overlay" id="modal-expense-ratios">
+  <div class="modal" style="max-width:440px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div class="modal-title" style="margin-bottom:0">Expense Ratios</div>
+      <button class="btn btn-sm btn-ghost" id="btn-ai-er" onclick="aiSuggestAllERs()">&#10024; AI Suggest All</button>
+    </div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Enter annual expense ratio (%) per ticker. Individual stocks = 0.</div>
+    <div id="er-modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-expense-ratios')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveERModal()">Save</button>
     </div>
   </div>
 </div>
