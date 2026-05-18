@@ -733,7 +733,7 @@ function renderView(){
   const view=document.getElementById('main-view');if(!view)return;const port=getPort();if(!port){view.innerHTML='';return;}
   let pVal=0,pCost=0,pPL=0,pDayChg=0,pHasP=false,pHasC=false;
   (port.groups||[]).forEach(g=>{const t=calcGroup(g);pVal+=t.val;pCost+=t.cost;if(t.pl!=null)pPL+=t.pl;pDayChg+=t.dayChg;if(t.hasP)pHasP=true;if(t.hasC)pHasC=true;});
-  const pPLPct=(pHasC&&pCost>0)?pPL/pCost*100:null,pDayPct=(pHasP&&pDayChg)?pDayChg/(pVal-pDayChg)*100:null;
+  const pDayPct=(pHasP&&pDayChg)?pDayChg/(pVal-pDayChg)*100:null;
   const totalH=(port.groups||[]).reduce((n,g)=>n+(g.holdings?.length||0),0);
   const showPL=pHasC,cols=showPL?8:7;
   let h='';
@@ -896,7 +896,7 @@ function renderView(){
       <td></td><td colspan="2">Portfolio Total</td><td class="r">&#8212;</td><td class="r">&#8212;</td>
       <td class="r">${pHasP?'$'+pVal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'&#8212;'}</td>
       <td class="r">${fmtS$(pDayChg)}</td>
-      ${showPL?`<td class="r">${fmtS$(pPL)}${pPLPct!=null?`<br><small style="font-size:10px;opacity:.8">${fmtPct(pPLPct)}</small>`:''}</td>`:''}
+      ${showPL?`<td class="r">${fmtS$(pPL)}</td>`:''}
       <td></td>
     </tr>`;
     h+='</tbody></table></div>';
