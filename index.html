@@ -624,6 +624,13 @@ function calcGroup(g) {
     if (h.holdingType === 'nso') {
       // NSO: P/L = intrinsic value, cost basis = $0 (always taxable)
       if (hv != null) { valForPL += hv; hasC = true; }
+    } else if (h.holdingType === 'rsu') {
+      // RSU: always taxable (taxed at vest). Cost = FMV at vest if entered, else $0
+      if (hv != null) {
+        valForPL += hv;
+        if (h.cost) cost += parseFloat(h.cost) * shs;
+        hasC = true;
+      }
     } else if (isTaxable && h.cost) {
       if (hv != null) valForPL += hv;
       cost += parseFloat(h.cost) * shs;
