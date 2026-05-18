@@ -603,7 +603,7 @@ function holdingValue(h) {
 function isOption(h) { return h.holdingType === 'rsu' || h.holdingType === 'nso'; }
 
 function calcGroup(g) {
-  let val=0, cost=0, dayChg=0, hasP=false, hasC=false;
+  let val=0, valForPL=0, cost=0, dayChg=0, hasP=false, hasC=false;
   const isTaxable = isTaxableForPL(g.accountType);
   (g.holdings||[]).forEach(h => {
     const shs = parseFloat(h.shares) || 0;
@@ -622,12 +622,16 @@ function calcGroup(g) {
       }
     }
     if (h.holdingType === 'nso') {
-      if (hv != null) hasC = true; // NSO: P/L = intrinsic, cost = $0 (always — exercised options are always taxable)
+      // NSO: P/L = intrinsic value, cost basis = $0 (always taxable)
+      if (hv != null) { valForPL += hv; hasC = true; }
     } else if (isTaxable && h.cost) {
-      cost += parseFloat(h.cost) * shs; hasC = true;
+      if (hv != null) valForPL += hv;
+      cost += parseFloat(h.cost) * shs;
+      hasC = true;
     }
   });
-  return { val, cost, dayChg, hasP, hasC, pl: hasC ? val-cost : null, plPct: (hasC&&cost>0) ? (val-cost)/cost*100 : null };
+  const pl = hasC ? valForPL - cost : null;
+  return { val, cost, dayChg, hasP, hasC, pl, plPct: (pl != null && cost > 0) ? pl/cost*100 : null };
 }
 
 function setStatus(m){const e=document.getElementById('fetch-status');if(e)e.textContent=m;}
@@ -720,9 +724,9 @@ function sortArrow(gid,field){const s=groupSort[gid];if(!s||s.field!==field)retu
 
 function renderView(){
   const view=document.getElementById('main-view');if(!view)return;const port=getPort();if(!port){view.innerHTML='';return;}
-  let pVal=0,pCost=0,pDayChg=0,pHasP=false,pHasC=false;
-  (port.groups||[]).forEach(g=>{const t=calcGroup(g);pVal+=t.val;pCost+=t.cost;pDayChg+=t.dayChg;if(t.hasP)pHasP=true;if(t.hasC)pHasC=true;});
-  const pPL=pHasC?pVal-pCost:null,pPLPct=(pPL!=null&&pCost>0)?pPL/pCost*100:null,pDayPct=(pHasP&&pDayChg)?pDayChg/(pVal-pDayChg)*100:null;
+  let pVal=0,pCost=0,pPL=0,pDayChg=0,pHasP=false,pHasC=false;
+  (port.groups||[]).forEach(g=>{const t=calcGroup(g);pVal+=t.val;pCost+=t.cost;if(t.pl!=null)pPL+=t.pl;pDayChg+=t.dayChg;if(t.hasP)pHasP=true;if(t.hasC)pHasC=true;});
+  const pPLPct=(pHasC&&pCost>0)?pPL/pCost*100:null,pDayPct=(pHasP&&pDayChg)?pDayChg/(pVal-pDayChg)*100:null;
   const totalH=(port.groups||[]).reduce((n,g)=>n+(g.holdings?.length||0),0);
   const showPL=pHasC,cols=showPL?8:7;
   let h='';
