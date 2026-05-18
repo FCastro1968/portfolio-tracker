@@ -740,7 +740,7 @@ function renderView(){
   h+=`<div class="summary-grid">
     <div class="stat-card"><div class="stat-label">Total value</div><div class="stat-value">${pHasP?'$'+pVal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'&#8212;'}</div></div>
     <div class="stat-card"><div class="stat-label">Today's change</div><div class="stat-value ${sc(pDayChg)}">${fmtS$(pDayChg)}</div><div class="stat-sub">${pDayPct!=null?fmtPct(pDayPct):''}</div></div>`;
-  if(pHasC)h+=`<div class="stat-card"><div class="stat-label">Unrealized P&amp;L</div><div class="stat-value ${sc(pPL)}">${fmtS$(pPL)}</div><div class="stat-sub">${pPLPct!=null?fmtPct(pPLPct):''}</div></div>`;
+  if(pHasC)h+=`<div class="stat-card"><div class="stat-label">Unrealized P&amp;L</div><div class="stat-value ${sc(pPL)}">${fmtS$(pPL)}</div></div>`;
   h+=`<div class="stat-card"><div class="stat-label">Holdings</div><div class="stat-value neu">${totalH}</div></div></div>`;
   const anyExpanded=(port.groups||[]).some(g=>!collapsedGroups.has(g.id));
   h+=`<div class="section-bar"><span class="section-title">Holdings by account</span><div class="section-actions">
