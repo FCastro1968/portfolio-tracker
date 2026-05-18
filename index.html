@@ -604,6 +604,7 @@ function isOption(h) { return h.holdingType === 'rsu' || h.holdingType === 'nso'
 
 function calcGroup(g) {
   let val=0, cost=0, dayChg=0, hasP=false, hasC=false;
+  const isTaxable = isTaxableForPL(g.accountType);
   (g.holdings||[]).forEach(h => {
     const shs = parseFloat(h.shares) || 0;
     const hv = holdingValue(h);
@@ -621,8 +622,8 @@ function calcGroup(g) {
       }
     }
     if (h.holdingType === 'nso') {
-      if (hv != null) hasC = true; // P/L = intrinsic value, cost basis = $0
-    } else if (h.cost) {
+      if (hv != null) hasC = true; // NSO: P/L = intrinsic, cost = $0 (always — exercised options are always taxable)
+    } else if (isTaxable && h.cost) {
       cost += parseFloat(h.cost) * shs; hasC = true;
     }
   });
@@ -816,7 +817,18 @@ function renderView(){
               dayChg = priceChg * shs;
             }
           }
-          const cb=hd.cost?parseFloat(hd.cost)*shs:null,pl=(value!=null&&cb!=null)?value-cb:null,plPct=(pl!=null&&cb>0)?pl/cb*100:null;
+          const isTaxableG = isTaxableForPL(g.accountType);
+          let cb=null, pl=null, plPct=null;
+          if (isTaxableG) {
+            if (hd.holdingType === 'nso') {
+              // P/L = intrinsic value, cost basis = $0
+              cb = 0; pl = value; plPct = null;
+            } else if (hd.cost) {
+              cb = parseFloat(hd.cost) * shs;
+              pl = (value != null) ? value - cb : null;
+              plPct = (pl != null && cb > 0) ? pl/cb*100 : null;
+            }
+          }
           // Location warning for this holding
           const splits=getHoldingAlloc(hd.id)||((hd.holdingType==='rsu'||hd.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
           let locBadge='';
@@ -837,7 +849,7 @@ function renderView(){
             <td class="r">${shs.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
             <td class="r">${priceCell}</td>
             <td class="r">${value!=null?fmt$(value):'&#8212;'}</td>
-            <td class="r">${dayChg!=null?`<span class="pill ${pillC(dayChg)}">${fmtPct(prices[hd.ticker]?.changePct)}</span>`:'&#8212;'}</td>
+            <td class="r">${dayChg!=null?`<span class="pill ${pillC(dayChg)}">${fmtS$(dayChg)}</span><br><small style="font-size:10px;opacity:.75" class="${sc(dayChg)}">${fmtPct(prices[hd.ticker]?.changePct)}</small>`:'&#8212;'}</td>
             ${showPL?`<td class="r ${sc(pl)}">${pl!=null?fmtS$(pl):'&#8212;'}${plPct!=null?`<br><small style="font-size:10px;opacity:.7">${fmtPct(plPct)}</small>`:''}</td>`:''}
             <td><span class="row-actions"><button class="row-btn" onclick="openEditHolding('${g.id}','${hd.id}')" title="Edit">&#9998;</button><button class="row-btn del" onclick="removeHolding('${g.id}','${hd.id}')" title="Remove">&#215;</button></span></td>
           </tr>`;
@@ -1151,6 +1163,12 @@ const ACCT_LOCATION = {
   'Other':            'taxable',
 };
 function acctLocation(accountType){ return ACCT_LOCATION[accountType] || 'taxable'; }
+
+// Stricter check used for P/L display — only accounts where unrealized gain is meaningful
+// for tax planning. Excludes 529 (tax-free for qualified withdrawals), Cash (no P/L),
+// and Other (ambiguous).
+const PL_TAXABLE_ACCOUNTS = new Set(['Taxable', 'Brokerage', 'Crypto']);
+function isTaxableForPL(accountType){ return PL_TAXABLE_ACCOUNTS.has(accountType); }
 
 // Location rules per bucket
 // preferred: array of location ids in order of preference
