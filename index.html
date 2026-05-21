@@ -729,6 +729,105 @@ function sortHoldings(holdings,gid){
 }
 function sortArrow(gid,field){const s=groupSort[gid];if(!s||s.field!==field)return'';return s.dir==='asc'?' ↑':' ↓';}
 
+// Aggregated-by-ticker view state
+let aggSort = { field: 'value', dir: 'desc' };
+function setAggSort(field) {
+  if (aggSort.field === field) aggSort.dir = aggSort.dir === 'asc' ? 'desc' : 'asc';
+  else aggSort = { field, dir: 'desc' };
+  renderView();
+}
+function aggSortArrow(field) {
+  if (aggSort.field !== field) return '';
+  return aggSort.dir === 'asc' ? ' ↑' : ' ↓';
+}
+function setViewMode(m) {
+  try { localStorage.setItem('pf_view_mode', m); } catch(e) {}
+  renderView();
+}
+
+function renderAggregatedView(port, showPL) {
+  // Aggregate holdings by composite key (ticker|fundContext for proxies, ticker for regular)
+  const agg = {};
+  (port.groups||[]).forEach(g => {
+    const isTaxable = isTaxableForPL(g.accountType);
+    (g.holdings||[]).forEach(h => {
+      if (isOption(h)) return; // options shown in separate modal
+      const shs = parseFloat(h.shares) || 0;
+      const hv = holdingValue(h);
+      const key = h.fundContext ? `${h.ticker}|${h.fundContext}` : h.ticker;
+      if (!agg[key]) {
+        agg[key] = {
+          ticker: h.ticker, fundContext: h.fundContext || null,
+          name: nameCache[h.ticker] || prices[h.ticker]?.name || '',
+          shares: 0, value: 0, dayChg: 0, pl: 0, hasC: false,
+          accounts: new Set(), isManual: false
+        };
+      }
+      const a = agg[key];
+      a.shares += shs;
+      if (hv != null) a.value += hv;
+      if (h.manualPrice) a.isManual = true;
+      a.accounts.add(g.id);
+      if (!h.manualPrice && prices[h.ticker]?.change != null) {
+        a.dayChg += prices[h.ticker].change * shs;
+      }
+      // P/L: same rules as calcGroup
+      if (isTaxable && h.cost && hv != null) {
+        a.pl += hv - (parseFloat(h.cost) * shs);
+        a.hasC = true;
+      }
+    });
+  });
+
+  let rows = Object.values(agg);
+  const s = aggSort;
+  rows.sort((a, b) => {
+    let va, vb;
+    if (s.field === 'ticker') return s.dir === 'asc' ? a.ticker.localeCompare(b.ticker) : b.ticker.localeCompare(a.ticker);
+    if (s.field === 'value') { va = a.value; vb = b.value; }
+    else if (s.field === 'dayChg') { va = a.dayChg; vb = b.dayChg; }
+    else if (s.field === 'pl') { va = a.hasC ? a.pl : -Infinity; vb = b.hasC ? b.pl : -Infinity; }
+    else if (s.field === 'accounts') { va = a.accounts.size; vb = b.accounts.size; }
+    else if (s.field === 'shares') { va = a.shares; vb = b.shares; }
+    else { va = a.value; vb = b.value; }
+    return s.dir === 'asc' ? va - vb : vb - va;
+  });
+
+  const sortBtn = (f, label) => `<button class="sort-btn${aggSort.field===f?' active':''}" onclick="setAggSort('${f}')">${label}${aggSortArrow(f)}</button>`;
+  let out = `<div class="table-wrap"><table>
+    <thead>
+      <tr><td colspan="${showPL?8:7}" style="padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
+        <span class="sort-bar"><span class="sort-lbl">Sort:</span>
+          ${sortBtn('ticker','Ticker')}${sortBtn('value','Value')}${sortBtn('dayChg','Day chg')}${showPL?sortBtn('pl','P&L'):''}${sortBtn('accounts','Accounts')}
+        </span>
+      </td></tr>
+      <tr>
+        <th>Ticker</th><th>Name</th>
+        <th class="r">Shares</th><th class="r">Price</th><th class="r">Value</th><th class="r">Day chg</th>
+        ${showPL?'<th class="r">Unrealized P&L</th>':''}
+        <th class="r">Accounts</th>
+      </tr>
+    </thead><tbody>`;
+
+  rows.forEach(r => {
+    const price = prices[r.ticker]?.price;
+    const dayPct = prices[r.ticker]?.changePct;
+    out += `<tr>
+      <td><span class="ticker">${esc(r.ticker)}</span>${r.fundContext?`<br><span style="font-size:10px;color:var(--text3);font-style:italic">${esc(r.fundContext)}</span>`:''}</td>
+      <td><span class="co-name">${esc(r.name||'')}</span></td>
+      <td class="r">${r.shares.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
+      <td class="r">${price!=null?fmt$(price):'&#8212;'}${r.isManual?'<br><small style="font-size:9px;opacity:.6">manual</small>':''}</td>
+      <td class="r">${r.value>0?fmt$(r.value):'&#8212;'}</td>
+      <td class="r">${r.dayChg!==0?`<span class="pill ${pillC(r.dayChg)}">${fmtS$(r.dayChg)}</span>${dayPct!=null?`<br><small style="font-size:10px;opacity:.75" class="${sc(r.dayChg)}">${fmtPct(dayPct)}</small>`:''}`:'&#8212;'}</td>
+      ${showPL?`<td class="r ${sc(r.pl)}">${r.hasC?fmtS$(r.pl):'&#8212;'}</td>`:''}
+      <td class="r">${r.accounts.size}</td>
+    </tr>`;
+  });
+
+  out += '</tbody></table></div>';
+  return out;
+}
+
 function renderView(){
   const view=document.getElementById('main-view');if(!view)return;const port=getPort();if(!port){view.innerHTML='';return;}
   let pVal=0,pCost=0,pPL=0,pDayChg=0,pHasP=false,pHasC=false;
@@ -742,12 +841,26 @@ function renderView(){
     <div class="stat-card"><div class="stat-label">Today's change</div><div class="stat-value ${sc(pDayChg)}">${fmtS$(pDayChg)}</div><div class="stat-sub">${pDayPct!=null?fmtPct(pDayPct):''}</div></div>`;
   if(pHasC)h+=`<div class="stat-card"><div class="stat-label">Unrealized P&amp;L</div><div class="stat-value ${sc(pPL)}">${fmtS$(pPL)}</div><div class="stat-sub">Taxable accounts only</div></div>`;
   h+=`<div class="stat-card"><div class="stat-label">Holdings</div><div class="stat-value neu">${totalH}</div></div></div>`;
+  const viewMode = localStorage.getItem('pf_view_mode') || 'account';
   const anyExpanded=(port.groups||[]).some(g=>!collapsedGroups.has(g.id));
-  h+=`<div class="section-bar"><span class="section-title">Holdings by account</span><div class="section-actions">
-    <button class="btn btn-sm btn-ghost" onclick="toggleAllGroups()">${anyExpanded?'&#9660; Collapse all':'&#9650; Expand all'}</button>
-    <button class="btn btn-sm btn-ghost" onclick="openAddGroup()">+ Add group</button>
-    <button class="btn btn-sm btn-primary" onclick="openAddHolding()">+ Add holding</button>
-  </div></div>`;
+  const tabBtn = (m, label) => `<button class="btn btn-xs ${viewMode===m?'btn-primary':'btn-ghost'}" style="font-size:11px" onclick="setViewMode('${m}')">${label}</button>`;
+  h+=`<div class="section-bar">
+    <span style="display:flex;align-items:center;gap:10px">
+      <span class="section-title">Holdings</span>
+      <span style="display:flex;gap:2px">${tabBtn('account','By account')}${tabBtn('ticker','By ticker')}</span>
+    </span>
+    <div class="section-actions">
+      ${viewMode==='account'?`<button class="btn btn-sm btn-ghost" onclick="toggleAllGroups()">${anyExpanded?'&#9660; Collapse all':'&#9650; Expand all'}</button>
+      <button class="btn btn-sm btn-ghost" onclick="openAddGroup()">+ Add group</button>
+      <button class="btn btn-sm btn-primary" onclick="openAddHolding()">+ Add holding</button>`:''}
+    </div></div>`;
+
+  if (viewMode === 'ticker') {
+    h += renderAggregatedView(port, showPL);
+    view.innerHTML = h;
+    return;
+  }
+
   const groups=port.groups||[];
   if(!groups.length){
     h+=`<div class="empty"><div class="empty-icon">&#128193;</div><div class="empty-title">No account groups yet</div><div class="empty-sub">Add a group first, then add holdings to it.</div><button class="btn btn-primary" onclick="openAddGroup()">+ Add group</button></div>`;
