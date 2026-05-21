@@ -855,7 +855,7 @@ function renderView(){
             :'<span style="color:var(--text3)">&#8212;</span>';
           h+=`<tr>
             <td></td>
-            <td><span class="ticker">${esc(hd.ticker)}</span>${locBadge}</td>
+            <td><span class="ticker">${esc(hd.ticker)}</span>${locBadge}${hd.fundContext?`<br><span style="font-size:10px;color:var(--text3);font-style:italic">${esc(hd.fundContext)}</span>`:''}</td>
             <td><span class="co-name">${esc(isManual?hd.ticker:(prices[hd.ticker]?.name||''))}</span></td>
             <td class="r">${shs.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
             <td class="r">${priceCell}</td>
