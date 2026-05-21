@@ -1139,6 +1139,7 @@ const EXPENSE_KEY        = 'portfolioTracker_7yrExpense';  // legacy — now per
 const BAND_KEY           = 'portfolioTracker_band';
 const SECTOR_WEIGHTS_KEY = 'portfolioTracker_sectorWeights';
 const ER_KEY             = 'portfolioTracker_expenseRatios';
+const DIRTY_KEY          = 'portfolioTracker_dirty'; // set when local has unsynced changes
 
 const SECTORS = ['Technology','Healthcare','Financials','Consumer Discretionary',
   'Consumer Staples','Industrials','Communication Services','Energy',
@@ -2836,6 +2837,17 @@ function setSyncStatus(state, msg) {
 /* ---- Load from Supabase ---- */
 async function loadFromSupabase() {
   if (!sbUser) return false;
+
+  // PROTECTION: if local has unsynced changes, do NOT overwrite them with cloud data.
+  // Push local up to cloud instead. This prevents data loss after a failed save.
+  if (localStorage.getItem(DIRTY_KEY) === '1') {
+    console.warn('Local has unsynced changes — pushing to cloud instead of pulling cloud down.');
+    setSyncStatus('busy', 'Recovering unsynced changes…');
+    syncPending = true;
+    await flushSave();
+    return true;
+  }
+
   setSyncStatus('busy', 'Loading…');
   try {
     const queryPromise = sb.from('user_data').select('*').eq('user_id', sbUser.id).single();
@@ -2881,6 +2893,7 @@ async function loadFromSupabase() {
 /* ---- Save to Supabase (debounced 2s) ---- */
 function scheduleSave() {
   syncPending = true;
+  try { localStorage.setItem(DIRTY_KEY, '1'); } catch(e) {}
   setSyncStatus('busy', 'Saving…');
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(flushSave, 2000);
@@ -2903,6 +2916,7 @@ async function flushSave() {
     ]);
     const error = result?.error;
     if (error) throw error;
+    try { localStorage.removeItem(DIRTY_KEY); } catch(e) {}
     setSyncStatus('ok', 'Saved ✓');
   } catch(e) {
     console.error('flushSave error:', e.message);
