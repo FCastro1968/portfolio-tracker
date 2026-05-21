@@ -754,10 +754,10 @@ function renderAggregatedView(port, showPL) {
       if (isOption(h)) return; // options shown in separate modal
       const shs = parseFloat(h.shares) || 0;
       const hv = holdingValue(h);
-      const key = h.fundContext ? `${h.ticker}|${h.fundContext}` : h.ticker;
+      const key = h.ticker;
       if (!agg[key]) {
         agg[key] = {
-          ticker: h.ticker, fundContext: h.fundContext || null,
+          ticker: h.ticker,
           name: nameCache[h.ticker] || prices[h.ticker]?.name || '',
           shares: 0, value: 0, dayChg: 0, pl: 0, hasC: false,
           accounts: new Set(), isManual: false
@@ -813,7 +813,7 @@ function renderAggregatedView(port, showPL) {
     const price = prices[r.ticker]?.price;
     const dayPct = prices[r.ticker]?.changePct;
     out += `<tr>
-      <td><span class="ticker">${esc(r.ticker)}</span>${r.fundContext?`<br><span style="font-size:10px;color:var(--text3);font-style:italic">${esc(r.fundContext)}</span>`:''}</td>
+      <td><span class="ticker">${esc(r.ticker)}</span></td>
       <td><span class="co-name">${esc(r.name||'')}</span></td>
       <td class="r">${r.shares.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
       <td class="r">${price!=null?fmt$(price):'&#8212;'}${r.isManual?'<br><small style="font-size:9px;opacity:.6">manual</small>':''}</td>
