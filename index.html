@@ -342,6 +342,7 @@
     <div class="form-error" id="err-port"></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('modal-portfolio')">Cancel</button>
+      <button class="btn btn-ghost" id="btn-dup-port" onclick="duplicatePortfolio()" style="display:none">&#10063; Duplicate</button>
       <button class="btn btn-primary" id="btn-save-port" onclick="savePortfolio()">Create</button>
     </div>
   </div>
@@ -1061,8 +1062,47 @@ function deleteCurrentPortfolio(){
 }
 function switchPort(id){setActiveId(id);renderTabs();renderView();}
 
-function openAddPort(){editingPortId=null;document.getElementById('modal-port-title').textContent='New portfolio';document.getElementById('btn-save-port').textContent='Create';document.getElementById('inp-port-name').value='';document.getElementById('inp-port-owner').value='';document.getElementById('err-port').style.display='none';openModal('modal-portfolio');setTimeout(()=>document.getElementById('inp-port-name').focus(),50);}
-function openEditPort(id){const p=portfolios.find(x=>x.id===id);if(!p)return;editingPortId=id;document.getElementById('modal-port-title').textContent='Edit portfolio';document.getElementById('btn-save-port').textContent='Save changes';document.getElementById('inp-port-name').value=p.name;document.getElementById('inp-port-owner').value=p.owner||'';document.getElementById('err-port').style.display='none';openModal('modal-portfolio');setTimeout(()=>document.getElementById('inp-port-name').focus(),50);}
+function openAddPort(){editingPortId=null;document.getElementById('modal-port-title').textContent='New portfolio';document.getElementById('btn-save-port').textContent='Create';document.getElementById('inp-port-name').value='';document.getElementById('inp-port-owner').value='';document.getElementById('err-port').style.display='none';document.getElementById('btn-dup-port').style.display='none';openModal('modal-portfolio');setTimeout(()=>document.getElementById('inp-port-name').focus(),50);}
+function duplicatePortfolio() {
+  if (!editingPortId) return;
+  const src = portfolios.find(p => p.id === editingPortId);
+  if (!src) return;
+  const currentName = document.getElementById('inp-port-name').value.trim() || src.name;
+  const newName = prompt('Name for the duplicate:', `${currentName} (copy)`);
+  if (!newName || !newName.trim()) return;
+
+  // Deep clone with new IDs; remap allocations to new holding IDs
+  const idMap = {}; // oldHoldingId -> newHoldingId
+  const newGroups = (src.groups || []).map(g => ({
+    ...JSON.parse(JSON.stringify(g)),
+    id: uid(),
+    holdings: (g.holdings || []).map(h => {
+      const newId = uid();
+      idMap[h.id] = newId;
+      return { ...JSON.parse(JSON.stringify(h)), id: newId };
+    })
+  }));
+  const newPort = {
+    ...JSON.parse(JSON.stringify(src)),
+    id: uid(),
+    name: newName.trim(),
+    groups: newGroups
+  };
+
+  // Copy allocations using ID map
+  Object.keys(idMap).forEach(oldId => {
+    if (allocations[oldId]) {
+      allocations[idMap[oldId]] = JSON.parse(JSON.stringify(allocations[oldId]));
+    }
+  });
+
+  portfolios.push(newPort);
+  activeId = newPort.id;
+  save(); saveAlloc();
+  closeModal('modal-portfolio');
+  renderTabs(); renderView();
+  alert(`Duplicated to "${newName.trim()}".`);
+}
 function savePortfolio(){
   const name=document.getElementById('inp-port-name').value.trim(),owner=document.getElementById('inp-port-owner').value.trim(),err=document.getElementById('err-port');
   if(!name){err.textContent='Please enter a name.';err.style.display='block';return;}err.style.display='none';
@@ -2301,6 +2341,27 @@ function renderNextDollar(port) {
     &nbsp;·&nbsp; Band: ±${toleranceBand}% relative
   </div>`;
 
+  // New contribution planner
+  const accountOptions = (port.groups||[]).map(g => `<option value="${esc(g.id)}">${esc(g.name)} (${esc(g.accountType||'—')})</option>`).join('');
+  out += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text2);margin-bottom:10px">New contribution</div>
+    <div style="display:grid;grid-template-columns:1fr 2fr auto;gap:10px;align-items:end">
+      <div>
+        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">Amount</label>
+        <input type="number" id="nd-amount" placeholder="20000" min="0" step="any"
+          style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text)" />
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:3px">Going into account</label>
+        <select id="nd-account" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text)">
+          ${accountOptions}
+        </select>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="planNextDollarContribution('${port.id}')">Plan</button>
+    </div>
+    <div id="nd-plan-result" style="margin-top:14px"></div>
+  </div>`;
+
   // Step 1: Risk-Off check
   out += `<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:8px">Step 1 — Risk-Off first</div>`;
   if (!a.expTarget) {
@@ -2375,6 +2436,114 @@ function renderNextDollar(port) {
   }
 
   body.innerHTML = out;
+}
+
+function planNextDollarContribution(portId) {
+  const port = portfolios.find(p => p.id === portId); if(!port) return;
+  const amount = parseFloat(document.getElementById('nd-amount').value) || 0;
+  const groupId = document.getElementById('nd-account').value;
+  const group = (port.groups||[]).find(g => g.id === groupId);
+  const resultEl = document.getElementById('nd-plan-result');
+  if (!amount || amount <= 0) { resultEl.innerHTML = '<div style="font-size:12px;color:var(--red)">Enter a positive amount.</div>'; return; }
+  if (!group) { resultEl.innerHTML = '<div style="font-size:12px;color:var(--red)">Select an account.</div>'; return; }
+
+  const a = computeNextDollarAnalysis(port);
+  const location = acctLocation(group.accountType);
+
+  // Helper: is this bucket allowed in this location?
+  // Use preferred/secondary as "good", hardAvoid as "blocked", soft as "ok but not ideal"
+  const allowed = (b) => !(b.hardAvoid || []).includes(location);
+  const ideal   = (b) => (b.preferred || []).includes(location) || (b.secondary || []).includes(location);
+
+  const allocations = []; // { bucket, amount, rationale }
+  let remaining = amount;
+
+  // 1) Risk-Off shortfall first (only if account supports cash/bonds)
+  if (a.riskOffShort && remaining > 0) {
+    const riskOffBuckets = BUCKETS.filter(b => !b.riskOn && allowed(b) && ideal(b));
+    if (riskOffBuckets.length) {
+      const toRiskOff = Math.min(remaining, a.riskOffGap);
+      // Spread proportionally among preferred Risk-Off buckets that are underweight
+      // Simplest: put into the first ideal Risk-Off bucket (typically Cash & Equivalents or Govt Bonds)
+      allocations.push({
+        bucket: riskOffBuckets[0],
+        amount: toRiskOff,
+        rationale: `Risk-Off shortfall (${fmt$(a.riskOffGap)} short of ${fmt$(a.expTarget)} target)`
+      });
+      remaining -= toRiskOff;
+    }
+  }
+
+  // 2) Underweight Risk-On buckets, weighted by gap, restricted to allowed location
+  const underweight = a.bucketAnalysis.filter(x => x.outBand && x.under && x.tgtPct > 0 && allowed(x.b));
+  if (remaining > 0 && underweight.length) {
+    // Weight by absolute gap (in $)
+    const gaps = underweight.map(x => ({
+      x, gap: Math.max(0, x.tgtVal - x.actVal),
+      isIdeal: ideal(x.b)
+    }));
+    // Prefer ideal-location buckets first; only fall back to allowed-but-not-ideal if needed
+    const idealOnes = gaps.filter(g => g.isIdeal);
+    const pool = idealOnes.length ? idealOnes : gaps;
+    const totalGap = pool.reduce((s, g) => s + g.gap, 0);
+    if (totalGap > 0) {
+      pool.forEach(g => {
+        const share = remaining * (g.gap / totalGap);
+        const dollars = Math.min(share, g.gap); // don't overshoot
+        if (dollars > 0.01) {
+          allocations.push({
+            bucket: g.x.b,
+            amount: dollars,
+            rationale: `Underweight by ${fmt$(g.gap)} vs target`
+          });
+        }
+      });
+      const allocated = allocations.slice(a.riskOffShort?1:0).reduce((s,al)=>s+al.amount, 0);
+      remaining -= allocated;
+    }
+  }
+
+  // 3) Leftover — distribute across targets proportionally to all allowed Risk-On buckets
+  if (remaining > 0.01) {
+    const onTgts = port.riskOnTargets || DEFAULT_TARGETS;
+    const allowedRiskOn = BUCKETS.filter(b => b.riskOn && allowed(b) && b.id !== 'co_equity' && b.id !== 'other_risk_on' && (onTgts[b.id]||0) > 0);
+    const totalTgt = allowedRiskOn.reduce((s, b) => s + (onTgts[b.id] || 0), 0);
+    if (totalTgt > 0) {
+      allowedRiskOn.forEach(b => {
+        const dollars = remaining * (onTgts[b.id] / totalTgt);
+        if (dollars > 0.01) {
+          const existing = allocations.find(al => al.bucket.id === b.id);
+          if (existing) existing.amount += dollars;
+          else allocations.push({ bucket: b, amount: dollars, rationale: 'Spread to target' });
+        }
+      });
+      remaining = 0;
+    }
+  }
+
+  // Render breakdown
+  if (!allocations.length) {
+    resultEl.innerHTML = `<div style="font-size:12px;color:var(--red)">No suitable buckets for this account location (${location}). Check bucket location rules or pick a different account.</div>`;
+    return;
+  }
+  const locLabel = { taxable:'Taxable', roth:'Roth', trad:'Traditional IRA', deferred:'401k/403b', hsa:'HSA' }[location] || location;
+  let html = `<div style="font-size:11px;color:var(--text2);margin-bottom:8px">${fmt$(amount)} into <strong style="color:var(--text)">${esc(group.name)}</strong> (${locLabel})</div>
+    <table style="width:100%;font-size:12px">
+      <thead><tr style="text-align:left;color:var(--text2);font-size:10px;text-transform:uppercase">
+        <th style="padding:4px 6px">Bucket</th><th style="padding:4px 6px;text-align:right">Amount</th><th style="padding:4px 6px;text-align:right">%</th><th style="padding:4px 6px">Why</th>
+      </tr></thead><tbody>`;
+  allocations.sort((a,b) => b.amount - a.amount).forEach(al => {
+    const pct = (al.amount / amount * 100).toFixed(1);
+    html += `<tr>
+      <td style="padding:4px 6px"><span class="bucket-dot" style="background:${al.bucket.color};display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px"></span>${al.bucket.label}</td>
+      <td style="padding:4px 6px;text-align:right;font-family:var(--mono)">${fmt$(al.amount)}</td>
+      <td style="padding:4px 6px;text-align:right;font-family:var(--mono);color:var(--text2)">${pct}%</td>
+      <td style="padding:4px 6px;color:var(--text2);font-size:11px">${al.rationale}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  if (remaining > 0.01) html += `<div style="font-size:11px;color:var(--text3);margin-top:6px">Unallocated: ${fmt$(remaining)} (no remaining targets for this location)</div>`;
+  resultEl.innerHTML = html;
 }
 
 async function aiNextDollar(portId) {
@@ -2937,6 +3106,11 @@ document.getElementById('auth-password')?.addEventListener('keydown', e => { if(
 async function signOut() {
   if (!confirm('Sign out? Your data is saved to the cloud.')) return;
   await sb.auth.signOut();
+  // Clear auth form so credentials don't linger on shared computers
+  const emailEl = document.getElementById('auth-email');
+  const pwEl    = document.getElementById('auth-password');
+  if (emailEl) emailEl.value = '';
+  if (pwEl)    pwEl.value = '';
   // onAuthStateChange fires → shows auth screen
 }
 
