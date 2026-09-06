@@ -491,6 +491,9 @@ function restoreActiveId() {
   if (saved && portfolios.some(p => p.id === saved)) activeId = saved;
   else activeId = portfolios[0]?.id || null;
 }
+// Anthropic model used for all AI features. Change here only.
+// claude-sonnet-4-20250514 was retired 2026-06-15.
+const AI_MODEL = 'claude-sonnet-5';
 const ACCOUNT_TYPES=['Taxable','Roth IRA','Traditional IRA','401(k)','403(b)','457(b)','HSA','529 Plan','SEP-IRA','SIMPLE IRA','Pension','Brokerage','Crypto','Cash','Other'];
 let portfolios=[],activeId=null,prices={},nameCache={},sectorCache={},sectorWeights={},expenseRatios={},apiKey='',anthropicKey='',refreshTimer=null,countdown=0,editingPortId=null,editingGroupId=null,editingHoldingCtx=null,returnToModal=null;
 let collapsedGroups = new Set();   // set of group ids that are collapsed
@@ -1581,7 +1584,7 @@ VOO:  [{"bucket":"us_stocks","pct":100}]`;
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: AI_MODEL,
         max_tokens: 300,
         messages: [{ role: 'user', content: prompt }]
       })
@@ -2050,7 +2053,7 @@ async function aiSuggestOneTicker(ticker) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: AI_MODEL,
         max_tokens: 300,
         system: 'You are a financial data assistant. Return ONLY valid JSON, no explanation, no markdown.',
         messages: [{ role: 'user', content:
@@ -2157,7 +2160,7 @@ async function aiSuggestAllERs() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: AI_MODEL,
         max_tokens: 500,
         system: 'You are a financial data assistant. Return ONLY valid JSON, no explanation, no markdown.',
         messages: [{ role: 'user', content:
@@ -2578,8 +2581,9 @@ JSON only, no markdown.`;
     const resp = await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:AI_MODEL,max_tokens:1200,messages:[{role:'user',content:prompt}]})
     });
+    if(!resp.ok){ const err=await resp.json().catch(()=>null); throw new Error(`API ${resp.status}: ${err?.error?.message||resp.statusText}`); }
     const data = await resp.json();
     const text = data.content?.find(c=>c.type==='text')?.text||'';
     const clean = text.replace(/```json|```/g,'').trim();
@@ -2975,8 +2979,9 @@ JSON only, no markdown.`;
     const resp = await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1400,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:AI_MODEL,max_tokens:1400,messages:[{role:'user',content:prompt}]})
     });
+    if(!resp.ok){ const err=await resp.json().catch(()=>null); throw new Error(`API ${resp.status}: ${err?.error?.message||resp.statusText}`); }
     const data = await resp.json();
     const text = data.content?.find(c=>c.type==='text')?.text||'';
     const suggestions = JSON.parse(text.replace(/```json|```/g,'').trim());
