@@ -386,6 +386,7 @@
         <button type="button" class="type-opt active" onclick="setHoldingType('stock')">Stock / ETF</button>
         <button type="button" class="type-opt" onclick="setHoldingType('rsu')">RSU</button>
         <button type="button" class="type-opt" onclick="setHoldingType('nso')">NSO</button>
+        <button type="button" class="type-opt" onclick="setHoldingType('listed')">Option</button>
       </div>
     </div>
     <input type="hidden" id="inp-holding-type" value="stock" />
@@ -406,7 +407,7 @@
         <input type="number" id="inp-shares" placeholder="0.00" min="0.0001" step="any" />
       </div>
       <div id="cost-wrap">
-        <label class="form-label">Avg cost / share</label>
+        <label class="form-label" id="lbl-cost">Avg cost / share</label>
         <input type="number" id="inp-cost" placeholder="0.00" min="0" step="any" />
       </div>
     </div>
@@ -414,11 +415,15 @@
     <!-- RSU + NSO fields (shown/hidden by setHoldingType) -->
     <div id="option-fields" style="display:none">
       <div class="form-row">
+        <div id="opt-type-wrap" style="display:none">
+          <label class="form-label">Put / Call *</label>
+          <select id="inp-option-type"><option value="put">Put</option><option value="call">Call</option></select>
+        </div>
         <div id="strike-wrap" style="display:none">
           <label class="form-label">Strike price / share *</label>
           <input type="number" id="inp-strike" placeholder="0.00" min="0" step="any" />
         </div>
-        <div>
+        <div id="grant-wrap">
           <label class="form-label">Grant date</label>
           <input type="date" id="inp-grant-date" />
         </div>
@@ -429,7 +434,7 @@
           <input type="date" id="inp-exp-date" />
         </div>
         <div>
-          <label class="form-label">Volatility %</label>
+          <label class="form-label" id="lbl-volatility">Volatility %</label>
           <input type="number" id="inp-volatility" value="24" min="1" max="300" step="0.5" />
         </div>
       </div>
@@ -444,11 +449,11 @@
     <div id="manual-price-wrap">
       <hr class="modal-divider" />
       <div class="form-group">
-        <label class="form-label">Manual price per share (optional)</label>
+        <label class="form-label" id="lbl-manual-price">Manual price per share (optional)</label>
         <input type="number" id="inp-manual-price" placeholder="e.g. 1.00 for SPAXX" min="0" step="any" />
-        <div class="form-hint">For money market funds (SPAXX, VMFXX) or tickers Finnhub doesn't carry.</div>
+        <div class="form-hint" id="hint-manual-price">For money market funds (SPAXX, VMFXX) or tickers Finnhub doesn't carry.</div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="fund-context-wrap">
         <label class="form-label">Actual fund / AI context (optional)</label>
         <input type="text" id="inp-fund-context" placeholder="e.g. FIAM Core Plus CL N bond fund" />
         <div class="form-hint">If this ticker is a proxy, describe the real fund here. Used by AI allocation suggest.</div>
@@ -589,19 +594,64 @@ function nsoIntrinsic(h, stockPrice) {
   return Math.max(stockPrice - parseFloat(h.strikePrice), 0);
 }
 
+/* ---- Listed (exchange-traded) options: holdingType 'listed' ----
+   ticker = underlying, shares = contracts, cost = premium paid per share,
+   manualPrice = current premium per share (optional override).
+   Without a manual price the premium is estimated with Black-Scholes from
+   the live underlying price and the implied volatility entered. */
+const OPT_MULT = 100;
+function isListed(h) { return h.holdingType === 'listed'; }
+function optMult(h) { return isListed(h) ? OPT_MULT : 1; }
+function qty(h) { return (parseFloat(h.shares) || 0) * optMult(h); } // share-equivalents
+function bsPut(S,K,T,r,sigma){
+  if(T<=0)return Math.max(K-S,0);
+  return bsCall(S,K,T,r,sigma) - S + K*Math.exp(-r*T); // put-call parity
+}
+function optExpiryMs(h) { return h.expirationDate ? new Date(h.expirationDate + 'T16:00:00').getTime() : null; } // 4pm close, local
+function optIsExpired(h) { const e = optExpiryMs(h); return e != null && Date.now() > e; }
+function optDaysLeft(h) { const e = optExpiryMs(h); return e == null ? null : Math.max(0, Math.ceil((e - Date.now()) / 86400000)); }
+function listedModel(h, S) {
+  if (S == null || !h.strikePrice || !h.expirationDate) return null;
+  const K = parseFloat(h.strikePrice);
+  const e = optExpiryMs(h);
+  const T = Math.max(0, (e - Date.now()) / (365.25*24*3600*1000));
+  const r = (h.riskFreeRate != null ? h.riskFreeRate : riskFreeRate) / 100;
+  const sigma = (parseFloat(h.volatility) || 30) / 100;
+  return h.optionType === 'call' ? bsCall(S, K, T, r, sigma) : bsPut(S, K, T, r, sigma);
+}
+function optLabel(h) {
+  const d = h.expirationDate ? new Date(h.expirationDate + 'T12:00:00') : null;
+  const ds = d ? `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}` : '';
+  return `${h.ticker} ${ds} ${+(parseFloat(h.strikePrice)||0)}${h.optionType === 'call' ? 'C' : 'P'}`;
+}
+
 /* Returns per-share current value for a holding */
 function effPrice(h) {
   if (h.manualPrice) return parseFloat(h.manualPrice);
   const sp = prices[h.ticker]?.price ?? null;
   if (h.holdingType === 'nso') return nsoIntrinsic(h, sp);  // intrinsic = current value
+  if (isListed(h)) return listedModel(h, sp);               // estimated premium per share
   return sp; // RSU and stock both use live stock price
 }
 
 /* Returns total current value of a holding */
 function holdingValue(h) {
-  const shs = parseFloat(h.shares) || 0;
   const ep = effPrice(h);
-  return ep != null ? ep * shs : null;
+  return ep != null ? ep * qty(h) : null;
+}
+
+/* Today's $ change for a holding (null when unknown) */
+function holdingDayChg(h) {
+  if (h.manualPrice) return null;
+  const q = prices[h.ticker]; if (q?.change == null) return null;
+  const shs = parseFloat(h.shares) || 0;
+  if (isListed(h)) {
+    // Effect of today's underlying move on the option (delta-like; ignores time decay)
+    const now = listedModel(h, q.price), prev = listedModel(h, q.price - q.change);
+    return (now != null && prev != null) ? (now - prev) * qty(h) : null;
+  }
+  if (h.holdingType === 'nso') return q.price > (parseFloat(h.strikePrice)||0) ? q.change * shs : 0; // only if ITM
+  return q.change * shs; // stock + RSU
 }
 
 function isOption(h) { return h.holdingType === 'rsu' || h.holdingType === 'nso'; }
@@ -613,18 +663,7 @@ function calcGroup(g) {
     const shs = parseFloat(h.shares) || 0;
     const hv = holdingValue(h);
     if (hv != null) { val += hv; hasP = true; }
-    if (!h.manualPrice && prices[h.ticker]?.change != null) {
-      const chg = prices[h.ticker].change;
-      if (h.holdingType === 'rsu') {
-        dayChg += chg * shs; // RSU: full price change
-      } else if (h.holdingType === 'nso') {
-        const K = parseFloat(h.strikePrice)||0;
-        const S = prices[h.ticker]?.price||0;
-        if (S > K) dayChg += chg * shs; // NSO: only if ITM
-      } else {
-        dayChg += chg * shs;
-      }
-    }
+    dayChg += holdingDayChg(h) || 0;
     if (h.holdingType === 'nso') {
       // NSO: P/L = intrinsic value, cost basis = $0 (always taxable)
       if (hv != null) { valForPL += hv; hasC = true; }
@@ -637,7 +676,7 @@ function calcGroup(g) {
       }
     } else if (isTaxable && h.cost) {
       if (hv != null) valForPL += hv;
-      cost += parseFloat(h.cost) * shs;
+      cost += parseFloat(h.cost) * qty(h); // qty = shares, or contracts × 100 for listed options
       hasC = true;
     }
   });
@@ -723,8 +762,8 @@ function sortHoldings(holdings,gid){
     if(s.field==='value'){va=holdingValue(a)??-Infinity;vb=holdingValue(b)??-Infinity;}
     if(s.field==='dayChg'){va=prices[a.ticker]?.change??-Infinity;vb=prices[b.ticker]?.change??-Infinity;}
     if(s.field==='pl'){
-      const ca=a.cost?parseFloat(a.cost)*(parseFloat(a.shares)||0):null;
-      const cb2=b.cost?parseFloat(b.cost)*(parseFloat(b.shares)||0):null;
+      const ca=a.cost?parseFloat(a.cost)*qty(a):null;
+      const cb2=b.cost?parseFloat(b.cost)*qty(b):null;
       va=(holdingValue(a)!=null&&ca!=null)?holdingValue(a)-ca:-Infinity;
       vb=(holdingValue(b)!=null&&cb2!=null)?holdingValue(b)-cb2:-Infinity;
     }
@@ -758,13 +797,15 @@ function renderAggregatedView(port, showPL) {
       if (isOption(h)) return; // options shown in separate modal
       const shs = parseFloat(h.shares) || 0;
       const hv = holdingValue(h);
-      const key = h.ticker;
+      const listed = isListed(h);
+      const key = listed ? 'OPT|' + optLabel(h) : h.ticker; // never merge an option with its underlying
       if (!agg[key]) {
         agg[key] = {
-          ticker: h.ticker,
-          name: nameCache[h.ticker] || prices[h.ticker]?.name || '',
+          ticker: listed ? optLabel(h) : h.ticker,
+          name: listed ? (h.optionType === 'call' ? 'Call' : 'Put') + ' on ' + (nameCache[h.ticker] || prices[h.ticker]?.name || h.ticker)
+                       : (nameCache[h.ticker] || prices[h.ticker]?.name || ''),
           shares: 0, value: 0, dayChg: 0, pl: 0, hasC: false,
-          accounts: new Set(), isManual: false
+          accounts: new Set(), isManual: false, listed, unitPrice: listed ? effPrice(h) : null
         };
       }
       const a = agg[key];
@@ -772,12 +813,10 @@ function renderAggregatedView(port, showPL) {
       if (hv != null) a.value += hv;
       if (h.manualPrice) a.isManual = true;
       a.accounts.add(g.id);
-      if (!h.manualPrice && prices[h.ticker]?.change != null) {
-        a.dayChg += prices[h.ticker].change * shs;
-      }
+      a.dayChg += holdingDayChg(h) || 0;
       // P/L: same rules as calcGroup
       if (isTaxable && h.cost && hv != null) {
-        a.pl += hv - (parseFloat(h.cost) * shs);
+        a.pl += hv - (parseFloat(h.cost) * qty(h));
         a.hasC = true;
       }
     });
@@ -814,13 +853,13 @@ function renderAggregatedView(port, showPL) {
     </thead><tbody>`;
 
   rows.forEach(r => {
-    const price = prices[r.ticker]?.price;
-    const dayPct = prices[r.ticker]?.changePct;
+    const price = r.listed ? r.unitPrice : prices[r.ticker]?.price;
+    const dayPct = r.listed ? ((r.value - r.dayChg) > 0 && r.dayChg ? r.dayChg / (r.value - r.dayChg) * 100 : null) : prices[r.ticker]?.changePct;
     out += `<tr>
       <td><span class="ticker">${esc(r.ticker)}</span></td>
       <td><span class="co-name">${esc(r.name||'')}</span></td>
-      <td class="r">${r.shares.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
-      <td class="r">${price!=null?fmt$(price):'&#8212;'}${r.isManual?'<br><small style="font-size:9px;opacity:.6">manual</small>':''}</td>
+      <td class="r">${r.shares.toLocaleString('en-US',{maximumFractionDigits:6})}${r.listed?' ctr':''}</td>
+      <td class="r">${price!=null?fmt$(price):'&#8212;'}${r.isManual?'<br><small style="font-size:9px;opacity:.6">manual</small>':(r.listed?'<br><small style="font-size:9px;opacity:.6">est.</small>':'')}</td>
       <td class="r">${r.value>0?fmt$(r.value):'&#8212;'}</td>
       <td class="r">${r.dayChg!==0?`<span class="pill ${pillC(r.dayChg)}">${fmtS$(r.dayChg)}</span>${dayPct!=null?`<br><small style="font-size:10px;opacity:.75" class="${sc(r.dayChg)}">${fmtPct(dayPct)}</small>`:''}`:'&#8212;'}</td>
       ${showPL?`<td class="r ${sc(r.pl)}">${r.hasC?fmtS$(r.pl):'&#8212;'}</td>`:''}
@@ -931,20 +970,11 @@ function renderView(){
         stocks.forEach(hd=>{
           const isManual=!!hd.manualPrice,shs=parseFloat(hd.shares)||0;
           const price=effPrice(hd),value=holdingValue(hd);
-          const priceChg = prices[hd.ticker]?.change;
-          let dayChg = null;
-          if (!isManual && priceChg != null) {
-            if (hd.holdingType === 'rsu') {
-              dayChg = priceChg * shs;
-            } else if (hd.holdingType === 'nso') {
-              const K = parseFloat(hd.strikePrice)||0;
-              const S = prices[hd.ticker]?.price||0;
-              if (S > K) dayChg = priceChg * shs;
-              else dayChg = 0;
-            } else {
-              dayChg = priceChg * shs;
-            }
-          }
+          const listed = isListed(hd);
+          const dayChg = holdingDayChg(hd);
+          const dayPct = listed
+            ? ((dayChg != null && value != null && value - dayChg > 0) ? dayChg / (value - dayChg) * 100 : null)
+            : prices[hd.ticker]?.changePct;
           const isTaxableG = isTaxableForPL(g.accountType);
           let cb=null, pl=null, plPct=null;
           if (isTaxableG) {
@@ -952,13 +982,13 @@ function renderView(){
               // P/L = intrinsic value, cost basis = $0
               cb = 0; pl = value; plPct = null;
             } else if (hd.cost) {
-              cb = parseFloat(hd.cost) * shs;
+              cb = parseFloat(hd.cost) * qty(hd);
               pl = (value != null) ? value - cb : null;
               plPct = (pl != null && cb > 0) ? pl/cb*100 : null;
             }
           }
           // Location warning for this holding
-          const splits=getHoldingAlloc(hd.id)||((hd.holdingType==='rsu'||hd.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
+          const splits=getHoldingAlloc(hd.id)||defaultAllocForType(hd.holdingType);
           let locBadge='';
           if(splits){
             for(const s of splits){
@@ -968,16 +998,20 @@ function renderView(){
           }
           // Manual tag is block-level so numbers right-align cleanly
           const priceCell=price!=null
-            ?`<span style="display:block">${fmt$(price)}</span>${isManual?'<span class="manual-tag">manual</span>':''}`
+            ?`<span style="display:block">${fmt$(price)}</span>${isManual?'<span class="manual-tag">manual</span>':(listed?'<span class="manual-tag" title="Black-Scholes estimate from live underlying price and your implied volatility. Enter a current price on the holding to override.">est.</span>':'')}`
             :'<span style="color:var(--text3)">&#8212;</span>';
           h+=`<tr>
             <td></td>
-            <td><span class="ticker">${esc(hd.ticker)}</span>${locBadge}${hd.fundContext?`<br><span style="font-size:10px;color:var(--text3);font-style:italic">${esc(hd.fundContext)}</span>`:''}</td>
-            <td><span class="co-name">${esc(isManual?hd.ticker:(prices[hd.ticker]?.name||''))}</span></td>
-            <td class="r">${shs.toLocaleString('en-US',{maximumFractionDigits:6})}</td>
+            <td>${listed
+              ? `<span class="ticker">${esc(optLabel(hd))}</span>${locBadge}<br><span style="font-size:10px;color:${optIsExpired(hd)?'var(--red)':(optDaysLeft(hd)<=7?'var(--amber,#e3b341)':'var(--text3)')}">${optIsExpired(hd)?'Expired — remove or update':`${optDaysLeft(hd)}d to expiry`}</span>`
+              : `<span class="ticker">${esc(hd.ticker)}</span>${locBadge}${hd.fundContext?`<br><span style="font-size:10px;color:var(--text3);font-style:italic">${esc(hd.fundContext)}</span>`:''}`}</td>
+            <td><span class="co-name">${listed
+              ? esc((hd.optionType==='call'?'Call':'Put')+' on '+(prices[hd.ticker]?.name||hd.ticker))+(prices[hd.ticker]?.price!=null?`<br><span style="font-size:10px;color:var(--text3)">${esc(hd.ticker)} ${fmt$(prices[hd.ticker].price)}</span>`:'')
+              : esc(isManual?hd.ticker:(prices[hd.ticker]?.name||''))}</span></td>
+            <td class="r">${shs.toLocaleString('en-US',{maximumFractionDigits:6})}${listed?'<br><small style="font-size:10px;opacity:.7">contracts</small>':''}</td>
             <td class="r">${priceCell}</td>
             <td class="r">${value!=null?fmt$(value):'&#8212;'}</td>
-            <td class="r">${dayChg!=null?`<span class="pill ${pillC(dayChg)}">${fmtS$(dayChg)}</span><br><small style="font-size:10px;opacity:.75" class="${sc(dayChg)}">${fmtPct(prices[hd.ticker]?.changePct)}</small>`:'&#8212;'}</td>
+            <td class="r">${dayChg!=null?`<span class="pill ${pillC(dayChg)}">${fmtS$(dayChg)}</span><br><small style="font-size:10px;opacity:.75" class="${sc(dayChg)}">${fmtPct(dayPct)}</small>`:'&#8212;'}</td>
             ${showPL?`<td class="r ${sc(pl)}">${pl!=null?fmtS$(pl):'&#8212;'}${plPct!=null?`<br><small style="font-size:10px;opacity:.7">${fmtPct(plPct)}</small>`:''}</td>`:''}
             <td><span class="row-actions"><button class="row-btn" onclick="openEditHolding('${g.id}','${hd.id}')" title="Edit">&#9998;</button><button class="row-btn del" onclick="removeHolding('${g.id}','${hd.id}')" title="Remove">&#215;</button></span></td>
           </tr>`;
@@ -1130,15 +1164,29 @@ function deleteGroup(gid){const port=getPort(),g=getGroup(port,gid);if(!g)return
 
 function setHoldingType(type){
   document.getElementById('inp-holding-type').value=type;
-  document.querySelectorAll('.type-opt').forEach((b,i)=>b.classList.toggle('active',['stock','rsu','nso'][i]===type));
-  const isOpt=type!=='stock',isNSO=type==='nso';
-  document.getElementById('option-fields').style.display=isOpt?'':'none';
-  document.getElementById('strike-wrap').style.display=isNSO?'':'none';
-  document.getElementById('nso-row').style.display=isNSO?'':'none';
-  document.getElementById('rfr-group').style.display=isNSO?'':'none';
-  document.getElementById('manual-price-wrap').style.display=isOpt?'none':'';
-  document.getElementById('lbl-shares').textContent=isOpt?'Options / shares *':'Shares *';
-  document.getElementById('ticker-hint').textContent=isOpt?'Underlying stock ticker (e.g. AAPL)':'US stocks & ETFs';
+  document.querySelectorAll('.type-opt').forEach((b,i)=>b.classList.toggle('active',['stock','rsu','nso','listed'][i]===type));
+  const isListedT=type==='listed';
+  const isOpt=type!=='stock',isNSO=type==='nso',hasStrike=isNSO||isListedT;
+  const show=(id,on)=>{const el=document.getElementById(id);if(el)el.style.display=on?'':'none';};
+  const txt=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t;};
+  show('option-fields',isOpt);
+  show('opt-type-wrap',isListedT);
+  show('strike-wrap',hasStrike);
+  show('grant-wrap',!isListedT);
+  show('nso-row',hasStrike);
+  show('rfr-group',isNSO);
+  show('manual-price-wrap',!isOpt||isListedT);
+  show('fund-context-wrap',!isListedT);
+  txt('lbl-shares',isListedT?'Contracts *':(isOpt?'Options / shares *':'Shares *'));
+  txt('lbl-cost',isListedT?'Premium paid / share':'Avg cost / share');
+  txt('lbl-volatility',isListedT?'Implied volatility %':'Volatility %');
+  txt('lbl-manual-price',isListedT?'Current option price / share (optional)':'Manual price per share (optional)');
+  txt('hint-manual-price',isListedT?'Leave blank to estimate from the live underlying price and IV. Enter your broker\'s mark (e.g. 12.40) for an exact value. 1 contract = 100 shares.':'For money market funds (SPAXX, VMFXX) or tickers Finnhub doesn\'t carry.');
+  const mp=document.getElementById('inp-manual-price');if(mp)mp.placeholder=isListedT?'e.g. 12.40':'e.g. 1.00 for SPAXX';
+  txt('ticker-hint',isListedT?'Underlying stock ticker (e.g. TMO)':(isOpt?'Underlying stock ticker (e.g. AAPL)':'US stocks & ETFs'));
+  // Listed options default to a market-like IV rather than the NSO default
+  const vol=document.getElementById('inp-volatility');
+  if(!editingHoldingCtx&&vol){if(isListedT&&vol.value==='24')vol.value='30';else if(!isListedT&&vol.value==='30')vol.value='24';}
   // Re-init alloc rows only if no splits set yet (don't overwrite on type toggle when editing)
   if(!editingHoldingCtx) initAllocRows(null, type);
 }
@@ -1155,6 +1203,7 @@ function openAddHoldingInGroup(gid){
   document.getElementById('inp-holding-group').disabled=false;
   ['inp-ticker','inp-shares','inp-cost','inp-manual-price','inp-fund-context','inp-strike','inp-grant-date','inp-exp-date'].forEach(id=>{const el=document.getElementById(id);if(el){el.value='';el.disabled=false;}});
   document.getElementById('inp-volatility').value='24';
+  document.getElementById('inp-option-type').value='put';
   document.getElementById('inp-rfr').value=riskFreeRate.toFixed(2);
   setHoldingType('stock');
   populateGroupSelect(gid);
@@ -1194,7 +1243,8 @@ function openEditHolding(gid,hid,returnModal_){
   document.getElementById('inp-strike').value=hd.strikePrice||'';
   document.getElementById('inp-grant-date').value=hd.grantDate||'';
   document.getElementById('inp-exp-date').value=hd.expirationDate||'';
-  document.getElementById('inp-volatility').value=hd.volatility||24;
+  document.getElementById('inp-volatility').value=hd.volatility||(htype==='listed'?30:24);
+  document.getElementById('inp-option-type').value=hd.optionType||'put';
   document.getElementById('inp-rfr').value=hd.riskFreeRate!=null?hd.riskFreeRate:'';
   document.getElementById('err-holding').style.display='none';
   openModal('modal-holding');setTimeout(()=>document.getElementById('inp-shares').focus(),50);
@@ -1210,17 +1260,20 @@ async function saveHolding(){
   const strikePrice=parseFloat(document.getElementById('inp-strike').value)||null;
   const grantDate=document.getElementById('inp-grant-date').value||null;
   const expirationDate=document.getElementById('inp-exp-date').value||null;
-  const volatility=parseFloat(document.getElementById('inp-volatility').value)||24;
+  const volatility=parseFloat(document.getElementById('inp-volatility').value)||(holdingType==='listed'?30:24);
+  const optionType=holdingType==='listed'?(document.getElementById('inp-option-type').value||'put'):null;
   const rfrRaw = document.getElementById('inp-rfr').value.trim();
   const holdingRFR = rfrRaw === '' ? null : (parseFloat(rfrRaw) || null);
   const err=document.getElementById('err-holding');
   if(!ticker){err.textContent='Please enter a ticker symbol.';err.style.display='block';return;}
-  if(!shares||shares<=0){err.textContent='Please enter a valid share count.';err.style.display='block';return;}
+  if(!shares||shares<=0){err.textContent=holdingType==='listed'?'Please enter the number of contracts.':'Please enter a valid share count.';err.style.display='block';return;}
+  if(holdingType==='listed'&&!strikePrice){err.textContent='Options require a strike price.';err.style.display='block';return;}
+  if(holdingType==='listed'&&!expirationDate){err.textContent='Options require an expiration date.';err.style.display='block';return;}
   if(holdingType==='nso'&&!strikePrice){err.textContent='NSOs require a strike price.';err.style.display='block';return;}
   if(holdingType==='nso'&&!expirationDate){err.textContent='NSOs require an expiration date.';err.style.display='block';return;}
   err.style.display='none';
   const allocSplits = getAllocFromRows();
-  const record={shares,cost,manualPrice,fundContext,holdingType,strikePrice,grantDate,expirationDate,volatility,riskFreeRate:holdingRFR};
+  const record={shares,cost,manualPrice,fundContext:holdingType==='listed'?null:fundContext,holdingType,optionType,strikePrice,grantDate:holdingType==='listed'?null:grantDate,expirationDate,volatility,riskFreeRate:holdingType==='listed'?null:holdingRFR};
 
   if(editingHoldingCtx){
     // Search all portfolios for the group (editing may have been triggered from any portfolio)
@@ -1459,9 +1512,10 @@ function setHoldingAlloc(hid, splits) {
   saveAlloc();
 }
 
-// Auto-assign RSU/NSO to Company Equity
+// Auto-assign RSU/NSO to Company Equity; listed options (hedges) to Other Risk-Off
 function defaultAllocForType(holdingType) {
   if (holdingType === 'rsu' || holdingType === 'nso') return [{ bucket:'co_equity', pct:100 }];
+  if (holdingType === 'listed') return [{ bucket:'other_risk_off', pct:100 }]; // hedges count as Risk-Off
   return null;
 }
 
@@ -1657,13 +1711,11 @@ function renderAllocModal() {
         // Get allocation for this holding
         let splits = getHoldingAlloc(h.id);
         // Auto-default RSU/NSO to Company Equity if not set
-        if (!splits && (h.holdingType === 'rsu' || h.holdingType === 'nso')) {
-          splits = [{ bucket: 'co_equity', pct: 100 }];
-        }
+        if (!splits) splits = defaultAllocForType(h.holdingType);
 
         if (!splits || !splits.length) {
           unassignedValue += val;
-          unassignedList.push({ ticker: h.ticker, group: g.name, portName: port.name, value: val, hid: h.id, gid: g.id });
+          unassignedList.push({ ticker: isListed(h) ? optLabel(h) : h.ticker, group: g.name, portName: port.name, value: val, hid: h.id, gid: g.id });
         } else {
           splits.forEach(s => {
             bucketTotals[s.bucket] = (bucketTotals[s.bucket] || 0) + val * (s.pct / 100);
@@ -1699,12 +1751,12 @@ function renderAllocModal() {
     (port.groups||[]).forEach(g => {
       (g.holdings||[]).forEach(h => {
         const splits = getHoldingAlloc(h.id) ||
-          ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
+          defaultAllocForType(h.holdingType);
         if (!splits) return;
         splits.forEach(s => {
           const w = locationWarning(s.bucket, g.accountType);
           if (w) locationWarnings.push({
-            ticker: h.ticker, portName: port.name, group: g.name,
+            ticker: isListed(h) ? optLabel(h) : h.ticker, portName: port.name, group: g.name,
             accountType: g.accountType, bucket: s.bucket, pct: s.pct,
             level: w.level, note: w.note, val: holdingValue(h), hid: h.id, gid: g.id
           });
@@ -1966,7 +2018,7 @@ function openSectorWeightsModal() {
     (port.groups || []).forEach(g => {
       (g.holdings || []).forEach(h => {
         const splits = getHoldingAlloc(h.id) ||
-          (isOption(h) ? [{bucket:'co_equity',pct:100}] : null);
+          defaultAllocForType(h.holdingType);
         if (!splits) return;
         if (splits.some(s => s.bucket === 'us_stocks')) tickerSet.add(h.ticker);
       });
@@ -2098,6 +2150,7 @@ function openERModal() {
   ports.forEach(port => {
     (port.groups || []).forEach(g => {
       (g.holdings || []).forEach(h => {
+        if (isListed(h)) return; // options have no expense ratio
         const erk = h.fundContext ? h.ticker + '|' + h.fundContext : h.ticker;
         if (!tickerMap[erk]) tickerMap[erk] = { ticker: h.ticker, name: nameCache[h.ticker] || h.ticker, fundContext: h.fundContext || null };
       });
@@ -2284,7 +2337,7 @@ function computeNextDollarAnalysis(port) {
       const val = holdingValue(h); if(!val) return;
       totalVal += val;
       const splits = getHoldingAlloc(h.id) ||
-        ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
+        defaultAllocForType(h.holdingType);
       if (splits) splits.forEach(s => { bt[s.bucket] = (bt[s.bucket]||0) + val*(s.pct/100); });
     });
   });
@@ -2321,7 +2374,7 @@ function computeNextDollarAnalysis(port) {
   (port.groups||[]).forEach(g => {
     (g.holdings||[]).forEach(h => {
       const splits = getHoldingAlloc(h.id) ||
-        ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null);
+        defaultAllocForType(h.holdingType);
       if (!splits) return;
       splits.forEach(s => {
         if (!holdingsByBucket[s.bucket]) holdingsByBucket[s.bucket] = [];
@@ -2661,8 +2714,9 @@ function computeRebalance(port) {
     };
     (g.holdings||[]).forEach(h => {
       const val = holdingValue(h); if (!val || val < 50) return;
+      if (isListed(h)) return; // hedges count toward Risk-Off but are never rebalance sell candidates
       const splits = getHoldingAlloc(h.id)||
-        ((h.holdingType==='rsu'||h.holdingType==='nso')?[{bucket:'co_equity',pct:100}]:null)||[];
+        defaultAllocForType(h.holdingType)||[];
       const isCash = splits.some(s => s.bucket === 'cash');
       const shs = parseFloat(h.shares)||0;
       const price = effPrice(h);
